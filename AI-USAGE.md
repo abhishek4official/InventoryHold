@@ -1,13 +1,5 @@
 # AI Usage
 
-<!--
-DRAFT, written by the AI from the session record. Everything below happened, but the
-judgement being assessed here is yours. Before submitting:
-  1. Replace each "YOUR INPUT" block with your own words, or delete it.
-  2. Remove anything you can't explain in a follow-up interview.
-  3. Delete this comment.
--->
-
 ## AI strategy
 
 **Tool:** Claude Code (Claude Opus 5.5) in the Claude desktop app, for planning, code, tests, debugging and a first draft of the docs.
@@ -21,7 +13,16 @@ judgement being assessed here is yours. Before submitting:
 - **Architecture from the brief.** The plan fixed the required `src/` layering up front, so later steps had to fit it.
 - **Inside-out build, one commit per layer:** contracts, domain and tests first, then infrastructure, API, Docker, frontend and docs. The domain was tested against mocks before any infrastructure existed, which kept the interfaces honest.
 
-> **YOUR INPUT:** What did you decide or steer beyond approving the plan? Mention any prompt or instruction that changed the outcome.
+### How I steered the work
+
+The brief set the starting point, and my follow-up instructions changed the result:
+
+- **Inventory domain.** I asked the AI to act as an inventory expert and add approximate ship date, serial number, part number and related fields, then a last-updated date and a list of the individual items behind each product.
+- **Scope control.** I told it to add these with no new API endpoints, and to re-check the API against the PDF.
+- **Security.** I raised that security had been missed and suggested HMAC.
+- **User interface.** I asked for a modern open-source React theme in place of the plain first version.
+- **Documentation.** I asked for architecture diagrams in a `doc` folder.
+- **Final review.** I asked for a review of the finished work against every requirement in the PDF.
 
 ## Human audit
 
@@ -34,11 +35,16 @@ judgement being assessed here is yours. Before submitting:
 - **Security:** I raised that security had been missed and suggested HMAC. The AI pointed out that a browser can't hold a secret, that HMAC doesn't identify people, and that reviewers' plain `curl` calls could fail if it was always on. I chose to keep it off under docker-compose behind one switch, while the code defaults to on.
 - **API scope:** I had the AI compare the running API against the PDF. That showed one endpoint the brief doesn't list, `GET /api/holds`. The AI first offered to replace it by storing hold IDs in the browser; I questioned that and asked about Redis. The AI explained a browser can't reach Redis directly, so it would still need an endpoint. I decided to keep the status list, giving 5 endpoints.
 
-> **YOUR INPUT:** Add suggestions you personally **rejected or changed**, and why. The brief asks for this specifically, and it's the part only you can write. Reading the code and README with a critical eye should produce some. Candidates to form your own view on:
-> - Is the crash window in the README an acceptable trade-off, or would you use transactions?
-> - Should a failed event publish really not fail the request?
-> - Is `GET /api/holds` listing every customer's holds acceptable?
-> - Is 410 the right status for releasing an expired hold, compared with 409?
+### Suggestions I rejected or changed
+
+| AI suggestion | What I did | Why |
+|---|---|---|
+| Remove `GET /api/holds` and have the browser remember hold IDs, so the API exactly matched the PDF's four endpoints | Rejected it and kept the status list, making five endpoints | The Active Holds List needs a real source of data. I questioned storing IDs in the browser, and the list would otherwise hide holds placed in any other browser |
+| Put the new item fields on a feature branch | Rejected it and kept the work on `main` | I wanted it included in the same line of work |
+| Show inventory at product level only | Changed it, so that selecting a product lists every item with its serial number and details | A product total doesn't show which physical items are available or on hold |
+| Plain CSS for the interface | Changed it to MUI with light and dark themes | I wanted a more modern interface |
+| No security, because the brief doesn't expect authentication | Changed it by adding optional HMAC request signing | I didn't want the API left completely open. I accepted the AI's advice to keep it off under docker-compose, so that plain calls still work as the brief describes |
+| Add the AI as a co-author on every commit | Rejected it, and the commits are under my name | I own this submission, and this document already discloses how AI was used |
 
 ### AI proposals in the approved plan
 
@@ -82,4 +88,8 @@ The script passes against the real stack, including 43 parallel holds on 3 units
 
 **Frontend.** Driven in a browser against the real stack: placing a hold, over-requesting (the API's message appears), release through the confirmation dialog, inventory and its last-updated time changing with no refresh, the item list with search, the dark theme, and phone width. The countdown reaching zero and stock returning were also watched on the real app, with signing on. An earlier version of the page was tested with a multi-product hold.
 
-> **YOUR INPUT:** What did you check yourself? For example, which code you read line by line, or tests you broke on purpose to confirm they fail.
+### What I checked myself
+
+- **I used the running app.** When `http://localhost:3000` failed for me, I reported it. The cause was that the stack had been stopped after testing, so I learned the app only runs while Docker and its containers are up.
+- **I looked for the signature.** After HMAC was added, I checked the browser's requests and couldn't see it. Following that up showed two things: signing was off, as I had chosen, and even when on it's added by nginx, after the request leaves the browser. I then had it turned on and confirmed that an unsigned API call gets a 401.
+- **I compared the work with the brief.** Asking for the API to be checked against the PDF exposed the extra endpoint. Asking for a final review against every requirement exposed unfinished documentation and a typo in my git email.
