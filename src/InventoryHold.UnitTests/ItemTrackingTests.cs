@@ -146,6 +146,35 @@ public class ItemTrackingTests : HoldServiceTestBase
         });
     }
 
+    [Test]
+    public async Task Inventory_lists_each_products_units_with_their_status()
+    {
+        var updated = Clock.GetUtcNow();
+        Products.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new Product("SKU-A", "A", 1, 1, IsSerialized: true, LastUpdatedAt: updated),
+            new Product("SKU-B", "B", 5, 0)
+        ]);
+        Units.Setup(u => u.GetAllAsync(It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new InventoryUnit("S1", "SKU-A", null, "LOT-1", "New", updated, updated),
+            new InventoryUnit("S2", "SKU-A", "hold-9", "LOT-1", "New", updated, updated)
+        ]);
+
+        var result = (await Service.GetInventoryAsync(CancellationToken.None)).ToDictionary(i => i.Sku);
+
+        var units = result["SKU-A"].Units;
+        Assert.Multiple(() =>
+        {
+            Assert.That(result["SKU-A"].LastUpdatedAt, Is.EqualTo(updated));
+            Assert.That(units.Select(u => u.SerialNumber), Is.EqualTo(new[] { "S1", "S2" }));
+            Assert.That(units[0].Status, Is.EqualTo(UnitStatus.Available));
+            Assert.That(units[1].Status, Is.EqualTo(UnitStatus.OnHold));
+            Assert.That(units[1].HoldId, Is.EqualTo("hold-9"));
+            Assert.That(result["SKU-B"].Units, Is.Empty);
+        });
+    }
+
     // 2026-01-01 is a Thursday. Expected values are the ship date as yyyy-MM-dd.
     [TestCase("2026-01-01T12:00:00Z", 1, "2026-01-02", TestName = "Before cutoff: next business day")]
     [TestCase("2026-01-01T14:00:00Z", 1, "2026-01-05", TestName = "At cutoff: counts from Friday, ships Monday")]

@@ -100,6 +100,28 @@ async function itemTracking() {
   check('released serials can be held again', JSON.stringify(again.items[0].serialNumbers) === JSON.stringify(serials))
   await call('DELETE', `/api/holds/${again.id}`)
 
+  const unitsNow = async () => (await stockOf(tracked.sku))
+  const baseline = await unitsNow()
+  check('each serial-tracked product lists one unit per item on hand',
+    baseline.units.length === baseline.available + baseline.held, `${baseline.units.length} units`)
+  check('each unit has a serial, lot, condition and dates',
+    baseline.units.every((u) => u.serialNumber && u.lotNumber && u.condition && u.receivedAt && u.lastUpdatedAt))
+  check('products have a last-updated date', inventory.every((item) => !!item.lastUpdatedAt))
+  check('quantity-tracked products list no units', (await stockOf(counted.sku)).units.length === 0)
+
+  await sleep(50)
+  const listed = (await placeHold(tracked.sku, 1)).body
+  const during = await unitsNow()
+  const heldUnit = during.units.find((u) => u.serialNumber === listed.items[0].serialNumbers[0])
+  check('the held unit shows OnHold with its hold ID', heldUnit.status === 'OnHold' && heldUnit.holdId === listed.id)
+  check('the other units stay Available', during.units.filter((u) => u.status === 'Available').length === during.available)
+  check('a hold moves the product and unit last-updated dates',
+    new Date(during.lastUpdatedAt) > new Date(baseline.lastUpdatedAt) &&
+    new Date(heldUnit.lastUpdatedAt) > new Date(baseline.units.find((u) => u.serialNumber === heldUnit.serialNumber).lastUpdatedAt))
+  await call('DELETE', `/api/holds/${listed.id}`)
+  const freed = (await unitsNow()).units.find((u) => u.serialNumber === heldUnit.serialNumber)
+  check('release returns the unit to Available', freed.status === 'Available' && freed.holdId === null)
+
   const pairs = Math.floor(tracked.available / 2)
   const results = await Promise.all(Array.from({ length: pairs + 30 }, () => placeHold(tracked.sku, 2)))
   const won = results.filter((result) => result.status === 201)
@@ -258,7 +280,7 @@ async function caching() {
   console.log('\n-- Redis')
 
   const { body: inventory } = await call('GET', '/api/inventory')
-  const key = 'inventory-hold:inventory'
+  const key = 'inventory-hold:v2:inventory'
   check('GET /api/inventory populates the cache', redisCli('EXISTS', key) === '1')
   const ttl = Number(redisCli('TTL', key))
   check('the inventory key has a TTL of 30s or less', ttl > 0 && ttl <= 30, `ttl ${ttl}`)
@@ -270,7 +292,7 @@ async function caching() {
   check('the next read shows the new stock', fresh.available === inventory.find((i) => i.sku === sku).available - 1)
 
   await call('GET', `/api/holds/${hold.id}`)
-  const holdKey = `inventory-hold:hold:${hold.id}`
+  const holdKey = `inventory-hold:v2:hold:${hold.id}`
   check('GET /api/holds/{id} populates the cache', redisCli('EXISTS', holdKey) === '1')
   await call('DELETE', `/api/holds/${hold.id}`)
   check('release invalidates the hold key', redisCli('EXISTS', holdKey) === '0')

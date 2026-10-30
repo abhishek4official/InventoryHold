@@ -16,4 +16,5 @@ public sealed record Product(
     string UnitOfMeasure = "EA",
     int ReorderPoint = 0,
     int HandlingDays = 1,
-    bool IsSerialized = false);
+    bool IsSerialized = false,
+    DateTimeOffset? LastUpdatedAt = null);

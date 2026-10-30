@@ -22,10 +22,11 @@ internal sealed class ProductDocument
     public int ReorderPoint { get; set; }
     public int HandlingDays { get; set; } = 1;
     public bool IsSerialized { get; set; }
+    public DateTime? LastUpdatedAt { get; set; }
 
     public Product ToEntity() => new(
         Sku, Name, Available, Held, PartNumber, Manufacturer, Category, WarehouseLocation,
-        UnitOfMeasure, ReorderPoint, HandlingDays, IsSerialized);
+        UnitOfMeasure, ReorderPoint, HandlingDays, IsSerialized, MongoDates.ToOffset(LastUpdatedAt));
 }
 
 /// <summary>One physical unit of a serial-tracked product. A null HoldId means it is free.</summary>
@@ -34,6 +35,19 @@ internal sealed class InventoryUnitDocument
     [BsonId] public string SerialNumber { get; set; } = "";
     public string Sku { get; set; } = "";
     public string? HoldId { get; set; }
+    public string LotNumber { get; set; } = "";
+    public string Condition { get; set; } = "New";
+    public DateTime? ReceivedAt { get; set; }
+    public DateTime? LastUpdatedAt { get; set; }
+
+    public InventoryUnit ToEntity() => new(
+        SerialNumber, Sku, HoldId, LotNumber, Condition, MongoDates.ToOffset(ReceivedAt), MongoDates.ToOffset(LastUpdatedAt));
+}
+
+internal static class MongoDates
+{
+    public static DateTimeOffset? ToOffset(DateTime? utc) =>
+        utc is { } value ? new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)) : null;
 }
 
 internal sealed class HoldLineDocument

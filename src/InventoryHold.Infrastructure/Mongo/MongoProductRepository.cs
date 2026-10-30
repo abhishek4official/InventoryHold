@@ -30,7 +30,7 @@ internal sealed class MongoProductRepository(IMongoDatabase database) : IProduct
         // concurrent requests can never both pass the check against the same units.
         var result = await _products.UpdateOneAsync(
             p => p.Sku == sku && p.Available >= quantity,
-            Builders<ProductDocument>.Update.Inc(p => p.Available, -quantity).Inc(p => p.Held, quantity),
+            Builders<ProductDocument>.Update.Inc(p => p.Available, -quantity).Inc(p => p.Held, quantity).CurrentDate(p => p.LastUpdatedAt),
             cancellationToken: cancellationToken);
         return result.ModifiedCount == 1;
     }
@@ -38,6 +38,6 @@ internal sealed class MongoProductRepository(IMongoDatabase database) : IProduct
     public Task RestoreAsync(string sku, int quantity, CancellationToken cancellationToken) =>
         _products.UpdateOneAsync(
             p => p.Sku == sku,
-            Builders<ProductDocument>.Update.Inc(p => p.Available, quantity).Inc(p => p.Held, -quantity),
+            Builders<ProductDocument>.Update.Inc(p => p.Available, quantity).Inc(p => p.Held, -quantity).CurrentDate(p => p.LastUpdatedAt),
             cancellationToken: cancellationToken);
 }

@@ -105,7 +105,9 @@ Dependencies point inward: WebApi → Infrastructure → Domain → Contracts. A
 
 - **`products`**: `_id` (SKU), `name`, `available`, `held`. Tracking `held` separately means the total on hand stays visible and a discrepancy can be spotted.
 - **`holds`**: `_id`, `customerId`, `status`, embedded `lines`, `createdAt`, `expiresAt`, `closedAt`. Lines are embedded because they belong to the hold and are always read with it. Product names are copied in so a hold still reads correctly if a product is renamed.
-- **`inventory_units`**: `_id` (serial number), `sku`, `holdId`. One document per physical unit of a serial-tracked product; a null `holdId` means it is free.
+- **`inventory_units`**: `_id` (serial number), `sku`, `holdId`, `lotNumber`, `condition`, `receivedAt`, `lastUpdatedAt`. One document per physical unit of a serial-tracked product; a null `holdId` means it is free.
+
+So inventory has two levels: `products` holds the catalogue details and the counts, and `inventory_units` holds each item. `GET /api/inventory` returns both, with a product's items in its `units` array.
 - Closed holds are kept, not deleted, as an audit record.
 - Persistence classes are separate from domain entities, so the domain has no MongoDB dependency.
 
@@ -122,6 +124,10 @@ These fields extend the existing responses, with no new endpoints. Where each on
 | `isSerialized` | Product | High-value items are tracked per unit. Cheap accessories are only counted, because recording a serial for each isn't worth the cost |
 | `serialNumbers` | Hold line | A serial identifies one physical unit, so it's assigned when that unit is held, never stored on the product |
 | `approxShipDate` | Hold line and inventory | The hold keeps the date quoted to the customer. Inventory shows what an order placed now could expect, or null when sold out |
+| `lastUpdatedAt` | Product and unit | Set by MongoDB's `$currentDate` in the same atomic update that moves the stock, so it can't drift from the change it records |
+| `lotNumber`, `condition`, `receivedAt` | Unit | Describes one physical item. The seeded values are sample data |
+
+**Trade-off:** returning `units` inside `GET /api/inventory` keeps the API to the agreed endpoints, and suits this catalogue of 58 items. With tens of thousands of items, this response would be too large to poll, and items should move to a paged `GET /api/inventory/{sku}/units`.
 
 **Serial numbers.** The atomic stock count still decides whether a hold succeeds. Only then are that many specific units claimed, each with its own atomic `findOneAndUpdate`, so no two holds can get the same serial. Releasing or expiring a hold frees its units first and then restores the count, so a count never promises a unit that isn't free yet. Units are claimed in serial order; a real warehouse might use first-in-first-out by receipt date.
 
@@ -170,6 +176,7 @@ Stock from an expired hold becomes available within one sweep interval, unless a
 - **Stock decisions never use the cache.** The atomic update in MongoDB decides, so stale cache data can show a slightly wrong number but can't cause overselling.
 - **A cached Active hold past its expiry isn't trusted.** The service rechecks `expiresAt` on every hit and goes to the database.
 - **Fail-open:** if Redis is down, reads fall back to MongoDB and a warning is logged. The client is set to `BacklogPolicy.FailFast`; its default queues commands during an outage, which stalled each request for about 11 seconds when tested.
+- **Versioned keys:** cache keys include a schema version, bumped whenever a cached response changes shape, so a redeploy never reads entries in the old format.
 - **Known race:** a reader that misses the cache can write back a value just after a concurrent mutation invalidated it. The TTLs bound how long that lasts.
 
 ### Messaging
@@ -203,6 +210,8 @@ Events carry everything a consumer needs, so it needn't call back. Messages are 
 ### Frontend
 
 TanStack Query is the state management. Nearly all of this app's state is server state, so a general store such as Redux would mean hand-writing the caching, loading flags and refetching that it provides. Local form state stays in `useState`.
+
+The interface uses [MUI](https://mui.com) (Material UI, MIT licence) with a custom theme in `frontend/src/theme.ts`, including light and dark modes that follow the system setting by default. Selecting a product opens a side panel listing each of its items, with search by serial, lot or hold ID. The panel reads from the same query as the table, so it stays current as holds change.
 
 - Both mutations refresh inventory and holds together, since every hold change moves stock. They refresh on failure too, because a 409 or 410 means this client's view was out of date.
 - Holds also expire on the server with no action here, so both lists poll every 15 seconds, and the countdown triggers a refresh when it reaches zero.

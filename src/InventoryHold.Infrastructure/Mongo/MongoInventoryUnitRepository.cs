@@ -1,3 +1,4 @@
+using InventoryHold.Domain.Entities;
 using InventoryHold.Domain.Repositories;
 using MongoDB.Driver;
 
@@ -8,6 +9,14 @@ internal sealed class MongoInventoryUnitRepository(IMongoDatabase database) : II
     private readonly IMongoCollection<InventoryUnitDocument> _units =
         database.GetCollection<InventoryUnitDocument>(MongoCollections.InventoryUnits);
 
+    public async Task<IReadOnlyList<InventoryUnit>> GetAllAsync(CancellationToken cancellationToken)
+    {
+        var documents = await _units.Find(FilterDefinition<InventoryUnitDocument>.Empty)
+            .SortBy(u => u.SerialNumber)
+            .ToListAsync(cancellationToken);
+        return documents.Select(d => d.ToEntity()).ToList();
+    }
+
     public async Task<IReadOnlyList<string>> ClaimAsync(string sku, string holdId, int quantity, CancellationToken cancellationToken)
     {
         // Each claim is atomic on one document, so no two holds can ever get the same serial number.
@@ -16,7 +25,7 @@ internal sealed class MongoInventoryUnitRepository(IMongoDatabase database) : II
         {
             var unit = await _units.FindOneAndUpdateAsync(
                 u => u.Sku == sku && u.HoldId == null,
-                Builders<InventoryUnitDocument>.Update.Set(u => u.HoldId, holdId),
+                Builders<InventoryUnitDocument>.Update.Set(u => u.HoldId, holdId).CurrentDate(u => u.LastUpdatedAt),
                 new FindOneAndUpdateOptions<InventoryUnitDocument>
                 {
                     Sort = Builders<InventoryUnitDocument>.Sort.Ascending(u => u.SerialNumber)
@@ -33,6 +42,6 @@ internal sealed class MongoInventoryUnitRepository(IMongoDatabase database) : II
     public Task ReleaseAsync(string holdId, CancellationToken cancellationToken) =>
         _units.UpdateManyAsync(
             u => u.HoldId == holdId,
-            Builders<InventoryUnitDocument>.Update.Set(u => u.HoldId, null),
+            Builders<InventoryUnitDocument>.Update.Set(u => u.HoldId, null).CurrentDate(u => u.LastUpdatedAt),
             cancellationToken: cancellationToken);
 }

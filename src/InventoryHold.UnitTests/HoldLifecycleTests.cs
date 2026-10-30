@@ -265,7 +265,7 @@ public class HoldLifecycleTests : HoldServiceTestBase
     [Test]
     public async Task Inventory_hit_skips_the_database()
     {
-        Cache.Setup(c => c.GetInventoryAsync(It.IsAny<CancellationToken>())).ReturnsAsync([new InventoryItemResponse("SKU-A", "A", "P", "M", "C", "L", "EA", 5, 1, 0, false, false, null)]);
+        Cache.Setup(c => c.GetInventoryAsync(It.IsAny<CancellationToken>())).ReturnsAsync([new InventoryItemResponse("SKU-A", "A", "P", "M", "C", "L", "EA", 5, 1, 0, false, false, null, null, [])]);
 
         await Service.GetInventoryAsync(CancellationToken.None);
 

@@ -133,13 +133,23 @@ public sealed class HoldService(
             return cached;
 
         var all = await products.GetAllAsync(cancellationToken);
+        var unitsBySku = (await units.GetAllAsync(cancellationToken)).ToLookup(u => u.Sku);
         var now = clock.GetUtcNow();
         var inventory = all.Select(p => new InventoryItemResponse(
             p.Sku, p.Name, p.PartNumber, p.Manufacturer, p.Category, p.WarehouseLocation, p.UnitOfMeasure,
             p.Available, p.Held, p.ReorderPoint,
             LowStock: p.Available <= p.ReorderPoint,
             p.IsSerialized,
-            ApproxShipDate: p.Available > 0 ? ShipDateEstimator.Estimate(now, p.HandlingDays, _options.ShippingCutoffHourUtc) : null))
+            ApproxShipDate: p.Available > 0 ? ShipDateEstimator.Estimate(now, p.HandlingDays, _options.ShippingCutoffHourUtc) : null,
+            p.LastUpdatedAt,
+            unitsBySku[p.Sku].Select(u => new InventoryUnitResponse(
+                u.SerialNumber,
+                u.HoldId is null ? UnitStatus.Available : UnitStatus.OnHold,
+                u.HoldId,
+                u.LotNumber,
+                u.Condition,
+                u.ReceivedAt,
+                u.LastUpdatedAt)).ToList()))
             .ToList();
 
         await TryCacheAsync(ct => cache.SetInventoryAsync(inventory, ct), cancellationToken);

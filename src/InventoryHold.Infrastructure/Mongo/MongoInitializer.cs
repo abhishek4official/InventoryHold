@@ -25,6 +25,8 @@ internal sealed class MongoInitializer(IMongoDatabase database, ILogger<MongoIni
         new() { Sku = "CM-4K-05", Name = "4K Webcam", Available = 3, PartNumber = "LN-CAM4K-PRO", Manufacturer = "Lensora", Category = "Video", WarehouseLocation = "WH1-B-01-07", ReorderPoint = 3, HandlingDays = 1, IsSerialized = true }
     ];
 
+    private static readonly DateTime FirstSampleDelivery = new(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var holds = database.GetCollection<HoldDocument>(MongoCollections.Holds);
@@ -64,12 +66,27 @@ internal sealed class MongoInitializer(IMongoDatabase database, ILogger<MongoIni
 
         var result = await products.BulkWriteAsync(upserts, cancellationToken: cancellationToken);
 
-        var unitUpserts = SeedProducts.Where(p => p.IsSerialized).SelectMany(p => Enumerable.Range(1, p.Available).Select(n =>
-            new UpdateOneModel<InventoryUnitDocument>(
-                Builders<InventoryUnitDocument>.Filter.Eq(u => u.SerialNumber, $"{p.Sku}-{n:D5}"),
-                Builders<InventoryUnitDocument>.Update.SetOnInsert(u => u.Sku, p.Sku).SetOnInsert(u => u.HoldId, null))
-            { IsUpsert = true }));
+        // Sample batches: five units per lot, each lot received a week after the last.
+        var unitUpserts = SeedProducts.Where(p => p.IsSerialized).SelectMany(p => Enumerable.Range(0, p.Available).Select(n =>
+        {
+            var batch = n / 5;
+            var received = FirstSampleDelivery.AddDays(batch * 7);
+            return new UpdateOneModel<InventoryUnitDocument>(
+                Builders<InventoryUnitDocument>.Filter.Eq(u => u.SerialNumber, $"{p.Sku}-{n + 1:D5}"),
+                Builders<InventoryUnitDocument>.Update
+                    .Set(u => u.LotNumber, $"LOT-{received:yyyyMMdd}")
+                    .Set(u => u.Condition, "New")
+                    .Set(u => u.ReceivedAt, received)
+                    .SetOnInsert(u => u.Sku, p.Sku)
+                    .SetOnInsert(u => u.HoldId, null))
+            { IsUpsert = true };
+        }));
         var unitResult = await units.BulkWriteAsync(unitUpserts, cancellationToken: cancellationToken);
+
+        // Stamps records that predate the field, and new seed data; later writes keep it current.
+        var now = DateTime.UtcNow;
+        await products.UpdateManyAsync(p => p.LastUpdatedAt == null, Builders<ProductDocument>.Update.Set(p => p.LastUpdatedAt, now), cancellationToken: cancellationToken);
+        await units.UpdateManyAsync(u => u.LastUpdatedAt == null, Builders<InventoryUnitDocument>.Update.Set(u => u.LastUpdatedAt, now), cancellationToken: cancellationToken);
 
         logger.LogInformation("MongoDB ready; seeded {Products} new product(s) and {Units} new serial-numbered unit(s)",
             result.Upserts.Count, unitResult.Upserts.Count);

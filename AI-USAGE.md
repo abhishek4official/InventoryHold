@@ -30,6 +30,7 @@ judgement being assessed here is yours. Before submitting:
 - **Verification:** with Docker missing, the AI offered to skip Docker verification. I chose to install Docker so the stack could be tested for real, because `docker-compose up --build` is a stated requirement and an unrun compose file proves nothing.
 - **Delivery:** I chose local commits and pushing myself, over giving the AI access to publish to GitHub.
 - **Item details:** I asked for approximate ship date, serial number, part number and related fields, with no new endpoints. The AI put them inside the existing responses and modelled serials per physical unit.
+- **Item list and interface:** I asked for a last-updated date, for a click on a product to show every item with its serial number and details, and for a modern open-source React theme. The AI chose MUI, and put the item list inside `GET /api/inventory` to respect my no-new-endpoints decision, documenting when that would stop being suitable.
 - **API scope:** I had the AI compare the running API against the PDF. That showed one endpoint the brief doesn't list, `GET /api/holds`. The AI first offered to replace it by storing hold IDs in the browser; I questioned that and asked about Redis. The AI explained a browser can't reach Redis directly, so it would still need an endpoint. I decided to keep the status list, giving 5 endpoints.
 
 > **YOUR INPUT:** Add suggestions you personally **rejected or changed**, and why. The brief asks for this specifically, and it's the part only you can write. Reading the code and README with a critical eye should produce some. Candidates to form your own view on:
@@ -59,10 +60,12 @@ These were errors in the AI's own output, found while checking it. They're the c
 5. **A stray import.** A test file imported `StackExchange.Redis`, which the test project doesn't reference and shouldn't need.
 6. **A Redis outage stalled every request.** The design said a cache outage must not hurt requests, and the mocked unit tests agreed, since a mock throws instantly. Stopping the real Redis container showed that requests still succeeded but took about 11 seconds, because StackExchange.Redis queues commands while reconnecting by default. Setting `BacklogPolicy.FailFast` brought them to about 20 ms. No unit test here could have caught this; only breaking the real dependency did.
 7. **A bug in the check script itself.** The first end-to-end run reported `HoldExpired` missing. Reading the queue directly showed the events were there, and that the script was trusting RabbitMQ's sampled queue depth, which lags behind recent publishes. The script was fixed rather than the service, after confirming which of the two was wrong.
+8. **Old-format cache entries after a redeploy.** Adding `units` to the inventory response broke a read straight after restarting the API: Redis still held the previous format, so `units` came back null until the 30-second expiry. Unit tests couldn't see this because the mocks have no old data. Cache keys now carry a schema version.
+9. **An invented API name.** The AI imported an icon, `DeleteOutline`, that the installed MUI version doesn't have. The type check failed the build, and the real name was confirmed by listing the package's files.
 
 ## Verification
 
-**Unit tests.** The AI wrote the suite alongside the domain code, with cases chosen from the brief's edge cases: non-existent, already-released and expired holds, partial failures, concurrency, serial number handling and ship dates. 54 NUnit tests, all mocked and needing no infrastructure.
+**Unit tests.** The AI wrote the suite alongside the domain code, with cases chosen from the brief's edge cases: non-existent, already-released and expired holds, partial failures, concurrency, serial number handling and ship dates. 55 NUnit tests, all mocked and needing no infrastructure.
 
 **Limits of the unit tests.** The parallel "no overselling" test uses a mock that simulates an atomic decrement, so it proves the service logic and not that MongoDB behaves atomically. That is why a separate end-to-end check exists.
 
@@ -72,6 +75,6 @@ The script passes against the real stack, including 43 parallel holds on 3 units
 
 **Failure testing.** Containers were stopped by hand while the API ran. With Redis down, reads, creates and releases all succeeded and the cache reconnected on its own afterwards. With RabbitMQ down, creating a hold succeeded in about 4 seconds, that event was lost as documented, and publishing resumed when the broker returned. Restarting the API kept live stock rather than re-seeding it.
 
-**Frontend.** Driven in a browser against the real stack: over-requesting (the API's message appears), a multi-product hold, release with confirmation, and inventory updating with no refresh. The countdown reaching zero was driven against a throwaway mock API with short holds, so that part verified UI behaviour only; real expiry was verified through the API.
+**Frontend.** Driven in a browser against the real stack: placing a hold, over-requesting (the API's message appears), release through the confirmation dialog, inventory and its last-updated time changing with no refresh, the item list with search, the dark theme, and phone width. An earlier version of the page was tested with a multi-product hold, and with the countdown reaching zero against a throwaway mock API; real expiry was verified through the API.
 
 > **YOUR INPUT:** What did you check yourself? For example, which code you read line by line, or tests you broke on purpose to confirm they fail.

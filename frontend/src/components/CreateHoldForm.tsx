@@ -1,4 +1,7 @@
 import { useState, type FormEvent } from 'react'
+import AddIcon from '@mui/icons-material/Add'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
+import { Alert, Box, Button, Card, CardContent, IconButton, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import { useCreateHold, useInventory } from '../api/hooks'
 
 interface Line {
@@ -21,6 +24,7 @@ export function CreateHoldForm() {
 
   const chosenSkus = new Set(lines.map((line) => line.sku))
   const canAddLine = lines.length < inventory.length
+  const isComplete = customerId.trim() !== '' && lines.every((line) => line.sku !== '' && line.quantity !== '')
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
@@ -34,73 +38,85 @@ export function CreateHoldForm() {
   }
 
   return (
-    <section className="panel">
-      <header className="panel-header">
-        <h2>Create hold</h2>
-      </header>
+    <Card>
+      <CardContent>
+        <Typography variant="h6" component="h2" sx={{ mb: 2 }}>
+          Create hold
+        </Typography>
 
-      <form onSubmit={handleSubmit}>
-        <label className="field">
-          Customer ID
-          <input value={customerId} onChange={(e) => setCustomerId(e.target.value)} required />
-        </label>
+        <Box component="form" onSubmit={handleSubmit}>
+          <Stack spacing={2}>
+            <TextField
+              size="small"
+              label="Customer ID"
+              value={customerId}
+              onChange={(event) => setCustomerId(event.target.value)}
+              required
+            />
 
-        {lines.map((line) => (
-          <div className="line" key={line.key}>
-            <label className="field grow">
-              Product
-              <select value={line.sku} onChange={(e) => updateLine(line.key, { sku: e.target.value })} required>
-                <option value="">Select a product</option>
-                {inventory.map((item) => (
-                  <option
-                    key={item.sku}
-                    value={item.sku}
-                    disabled={item.sku !== line.sku && chosenSkus.has(item.sku)}
-                  >
-                    {item.name} ({item.available} available)
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field quantity">
-              Quantity
-              <input
-                type="number"
-                min={1}
-                value={line.quantity}
-                onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
-                required
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary"
-              disabled={lines.length === 1}
-              aria-label="Remove this product"
-              onClick={() => setLines((current) => current.filter((other) => other.key !== line.key))}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
+            {lines.map((line) => (
+              <Stack direction="row" spacing={1} key={line.key} sx={{ alignItems: 'center' }}>
+                <TextField
+                  select
+                  size="small"
+                  label="Product"
+                  value={line.sku}
+                  onChange={(event) => updateLine(line.key, { sku: event.target.value })}
+                  sx={{ flexGrow: 1, minWidth: 0 }}
+                >
+                  {inventory.map((item) => (
+                    <MenuItem
+                      key={item.sku}
+                      value={item.sku}
+                      disabled={item.sku !== line.sku && chosenSkus.has(item.sku)}
+                    >
+                      {item.name} ({item.available} available)
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Quantity"
+                  value={line.quantity}
+                  onChange={(event) => updateLine(line.key, { quantity: event.target.value })}
+                  slotProps={{ htmlInput: { min: 1 } }}
+                  sx={{ width: 100, flexShrink: 0 }}
+                  required
+                />
+                <Tooltip title="Remove this product">
+                  <span>
+                    <IconButton
+                      aria-label="Remove this product"
+                      disabled={lines.length === 1}
+                      onClick={() => setLines((current) => current.filter((other) => other.key !== line.key))}
+                    >
+                      <DeleteOutlineIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Stack>
+            ))}
 
-        {createHold.error && <p className="error" role="alert">{createHold.error.message}</p>}
-        {createHold.isSuccess && <p className="success" role="status">Hold placed.</p>}
+            {createHold.error && <Alert severity="error">{createHold.error.message}</Alert>}
+            {createHold.isSuccess && <Alert severity="success">Hold placed.</Alert>}
 
-        <div className="actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={!canAddLine}
-            onClick={() => setLines((current) => [...current, emptyLine()])}
-          >
-            Add another product
-          </button>
-          <button type="submit" disabled={createHold.isPending}>
-            {createHold.isPending ? 'Placing hold…' : 'Place hold'}
-          </button>
-        </div>
-      </form>
-    </section>
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="outlined"
+                startIcon={<AddIcon />}
+                disabled={!canAddLine}
+                onClick={() => setLines((current) => [...current, emptyLine()])}
+              >
+                Add another product
+              </Button>
+              <Button type="submit" variant="contained" disabled={!isComplete || createHold.isPending}>
+                {createHold.isPending ? 'Placing hold…' : 'Place hold'}
+              </Button>
+            </Stack>
+          </Stack>
+        </Box>
+      </CardContent>
+    </Card>
   )
 }

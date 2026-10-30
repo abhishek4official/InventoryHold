@@ -16,9 +16,12 @@ internal sealed class RedisInventoryCache(IConnectionMultiplexer redis, IOptions
         Converters = { new JsonStringEnumConverter() }
     };
 
+    // Bump when a cached response's shape changes, so a redeploy never reads entries in the old format.
+    private const string SchemaVersion = "v2";
+
     private readonly IDatabase _database = redis.GetDatabase();
-    private readonly string _inventoryKey = $"{options.Value.KeyPrefix}inventory";
-    private readonly string _holdKeyPrefix = $"{options.Value.KeyPrefix}hold:";
+    private readonly string _inventoryKey = $"{options.Value.KeyPrefix}{SchemaVersion}:inventory";
+    private readonly string _holdKeyPrefix = $"{options.Value.KeyPrefix}{SchemaVersion}:hold:";
     private readonly TimeSpan _inventoryTtl = TimeSpan.FromSeconds(options.Value.InventoryTtlSeconds);
 
     public Task<IReadOnlyList<InventoryItemResponse>?> GetInventoryAsync(CancellationToken cancellationToken) =>

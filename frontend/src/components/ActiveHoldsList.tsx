@@ -1,4 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
+import TimerOutlinedIcon from '@mui/icons-material/TimerOutlined'
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  LinearProgress,
+  Paper,
+  Stack,
+  Typography,
+} from '@mui/material'
 import { useActiveHolds, useRefreshStockAndHolds, useReleaseHold } from '../api/hooks'
 import type { Hold } from '../api/types'
 import { formatDate } from '../format'
@@ -37,74 +55,101 @@ export function ActiveHoldsList() {
   }, [holds, now, refresh])
 
   return (
-    <section className="panel">
-      <header className="panel-header">
-        <h2>Active holds</h2>
-        {holds && <span className="muted">{holds.length}</span>}
-      </header>
+    <Card>
+      <CardContent>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 2 }}>
+          <Typography variant="h6" component="h2">Active holds</Typography>
+          {holds && <Chip size="small" label={holds.length} />}
+        </Stack>
 
-      {error && <p className="error" role="alert">{error.message}</p>}
-      {isPending && !error && <p className="muted">Loading holds…</p>}
-      {holds?.length === 0 && <p className="muted">No active holds.</p>}
+        {error && <Alert severity="error">{error.message}</Alert>}
+        {isPending && !error && <Typography color="text.secondary">Loading holds…</Typography>}
+        {holds?.length === 0 && <Typography color="text.secondary">No active holds.</Typography>}
 
-      <ul className="holds">
-        {holds?.map((hold) => (
-          <HoldRow key={hold.id} hold={hold} remainingMs={new Date(hold.expiresAt).getTime() - now} />
-        ))}
-      </ul>
-    </section>
+        <Stack spacing={1.5}>
+          {holds?.map((hold) => (
+            <HoldRow key={hold.id} hold={hold} now={now} />
+          ))}
+        </Stack>
+      </CardContent>
+    </Card>
   )
 }
 
-function HoldRow({ hold, remainingMs }: { hold: Hold; remainingMs: number }) {
+function HoldRow({ hold, now }: { hold: Hold; now: number }) {
   const release = useReleaseHold()
   const [confirming, setConfirming] = useState(false)
 
+  const expiresAt = new Date(hold.expiresAt).getTime()
+  const total = expiresAt - new Date(hold.createdAt).getTime()
+  const remaining = expiresAt - now
+  const isUrgent = remaining < 60_000
+
   return (
-    <li className="hold">
-      <div className="hold-summary">
-        <div>
-          <strong>{hold.customerId}</strong> <span className="badge">{hold.status}</span>
-          <div className="muted small">{hold.id}</div>
-        </div>
-        <div className={remainingMs < 60_000 ? 'countdown urgent' : 'countdown'} aria-label="Time remaining">
-          {formatRemaining(remainingMs)}
-        </div>
-      </div>
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="subtitle2" component="span" sx={{ mr: 1 }}>{hold.customerId}</Typography>
+          <Chip size="small" color="primary" variant="outlined" label={hold.status} />
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}>
+            {hold.id}
+          </Typography>
+        </Box>
+        <Chip
+          icon={<TimerOutlinedIcon />}
+          color={isUrgent ? 'error' : 'default'}
+          label={formatRemaining(remaining)}
+          aria-label="Time remaining"
+          sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, ml: 1 }}
+        />
+      </Stack>
 
-      <ul className="hold-items">
+      <LinearProgress
+        variant="determinate"
+        color={isUrgent ? 'error' : 'primary'}
+        value={Math.max(0, Math.min(100, (remaining / total) * 100))}
+        sx={{ mb: 1.5, borderRadius: 1 }}
+      />
+
+      <Stack spacing={1} sx={{ mb: 1.5 }}>
         {hold.items.map((item) => (
-          <li key={item.sku}>
-            {item.quantity} × {item.productName}
-            <div className="muted small">
+          <Box key={item.sku}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              {item.quantity} × {item.productName}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" component="div">
               Part {item.partNumber} · Ships about {formatDate(item.approxShipDate)}
-            </div>
+            </Typography>
             {item.serialNumbers.length > 0 && (
-              <div className="muted small">Serials: {item.serialNumbers.join(', ')}</div>
+              <Stack direction="row" useFlexGap spacing={0.5} sx={{ flexWrap: 'wrap', mt: 0.5 }}>
+                {item.serialNumbers.map((serial) => (
+                  <Chip key={serial} size="small" variant="outlined" label={serial} sx={{ fontFamily: 'monospace' }} />
+                ))}
+              </Stack>
             )}
-          </li>
+          </Box>
         ))}
-      </ul>
+      </Stack>
 
-      {release.error && <p className="error" role="alert">{release.error.message}</p>}
+      <Button size="small" variant="outlined" color="error" onClick={() => setConfirming(true)}>
+        Release hold
+      </Button>
 
-      {confirming ? (
-        <div className="actions">
-          <span>Release this hold and return its stock?</span>
-          <button type="button" className="danger" disabled={release.isPending} onClick={() => release.mutate(hold.id)}>
+      <Dialog open={confirming} onClose={() => !release.isPending && setConfirming(false)}>
+        <DialogTitle>Release this hold?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            The stock held for {hold.customerId} goes back to available inventory. This can't be undone.
+          </DialogContentText>
+          {release.error && <Alert severity="error" sx={{ mt: 2 }}>{release.error.message}</Alert>}
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={release.isPending} onClick={() => setConfirming(false)}>Keep hold</Button>
+          <Button color="error" variant="contained" disabled={release.isPending} onClick={() => release.mutate(hold.id)}>
             {release.isPending ? 'Releasing…' : 'Yes, release'}
-          </button>
-          <button type="button" className="secondary" disabled={release.isPending} onClick={() => setConfirming(false)}>
-            Keep hold
-          </button>
-        </div>
-      ) : (
-        <div className="actions">
-          <button type="button" className="secondary" onClick={() => setConfirming(true)}>
-            Release hold
-          </button>
-        </div>
-      )}
-    </li>
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Paper>
   )
 }

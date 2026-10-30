@@ -40,6 +40,9 @@ public abstract class HoldServiceTestBase
         Products
             .Setup(p => p.TryReserveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        Units
+            .Setup(u => u.GetAllAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
 
         Service = new HoldService(
             Holds.Object,

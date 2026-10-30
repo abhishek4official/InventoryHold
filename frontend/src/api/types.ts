@@ -17,6 +17,21 @@ export interface InventoryItem {
   isSerialized: boolean
   /** ISO date (yyyy-MM-dd); null when nothing is available to ship. */
   approxShipDate: string | null
+  lastUpdatedAt: string | null
+  /** Each physical item; empty for products tracked by quantity. */
+  units: InventoryUnit[]
+}
+
+export type UnitStatus = 'Available' | 'OnHold'
+
+export interface InventoryUnit {
+  serialNumber: string
+  status: UnitStatus
+  holdId: string | null
+  lotNumber: string
+  condition: string
+  receivedAt: string | null
+  lastUpdatedAt: string | null
 }
 
 export interface HoldItem {
