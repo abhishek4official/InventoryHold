@@ -1,5 +1,8 @@
 # Build, test and export on every push and pull request. Publishes images from main and version tags.
 # Deployment only ever runs when started by hand. See "CI/CD and deployment" in the README.
+#
+# Runners are pinned to Ubuntu 24.04 because MongoDB refuses to start on Linux kernels 6.19 to 7.0.13,
+# which includes Ubuntu 26.04 and so ubuntu-latest. See "Known limitation" in the README.
 name: Pipeline
 
 on:
@@ -32,7 +35,7 @@ defaults:
 jobs:
   build-and-test:
     name: Build and unit test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +90,7 @@ jobs:
   end-to-end:
     name: End-to-end (HMAC ${{ matrix.hmac }})
     needs: build-and-test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +127,7 @@ jobs:
 
       - name: Collect container logs
         if: always()
-        run: docker compose logs --no-color > containers-${{ matrix.hmac }}.log
+        run: docker compose logs --no-color | tee containers-${{ matrix.hmac }}.log | tail -n 40
 
       - name: Export the results
         if: always()
@@ -144,7 +147,7 @@ jobs:
     name: Publish images and deployment bundle
     needs: end-to-end
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -228,7 +231,7 @@ jobs:
     name: Attach the bundle to a GitHub Release
     needs: images
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -247,7 +250,7 @@ jobs:
     name: Deploy to production
     needs: images
     if: github.event_name == 'workflow_dispatch' && inputs.deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     permissions:
       contents: read

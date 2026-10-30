@@ -38,7 +38,7 @@ if start "$version"; then
 fi
 
 echo "Version ${version} did not become healthy." >&2
-compose logs --tail 40 api frontend >&2 || true
+compose logs --tail 40 >&2 || true
 
 if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
   echo "Rolling back to ${previous}" >&2
