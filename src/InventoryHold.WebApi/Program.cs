@@ -1,23 +1,39 @@
+using System.Text.Json.Serialization;
+using InventoryHold.Domain.Services;
+using InventoryHold.Infrastructure;
+using InventoryHold.WebApi.BackgroundServices;
+using InventoryHold.WebApi.ErrorHandling;
+using Microsoft.Extensions.Options;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
-builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+builder.Services.AddControllers()
+    .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddOpenApi();
+builder.Services.AddHealthChecks();
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<ProblemDetailsExceptionHandler>();
+
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddOptions<HoldOptions>()
+    .Bind(builder.Configuration.GetSection(HoldOptions.SectionName))
+    .Validate(o => o.DefaultDurationMinutes > 0, "Holds:DefaultDurationMinutes must be positive.")
+    .Validate(o => o.SweepIntervalSeconds > 0, "Holds:SweepIntervalSeconds must be positive.")
+    .Validate(o => o.SweepBatchSize > 0, "Holds:SweepBatchSize must be positive.")
+    .Validate(o => o.ListLimit > 0, "Holds:ListLimit must be positive.")
+    .ValidateOnStart();
+builder.Services.AddScoped<IHoldService, HoldService>();
+
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddHostedService<HoldExpirySweeper>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+app.UseExceptionHandler();
+app.UseStatusCodePages();
 
-app.UseHttpsRedirection();
-
-app.UseAuthorization();
-
+app.MapOpenApi();
+app.MapHealthChecks("/health");
 app.MapControllers();
 
 app.Run();
