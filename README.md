@@ -87,6 +87,8 @@ Errors are RFC 7807 ProblemDetails with a machine-readable `code`:
 
 ## Architecture
 
+See [doc/architecture.md](doc/architecture.md) for diagrams of the system, the code layers, the main request flows, the data model, events and request signing.
+
 ```
 src/
 ├── InventoryHold.Contracts/       Requests, responses, enums, event payloads
