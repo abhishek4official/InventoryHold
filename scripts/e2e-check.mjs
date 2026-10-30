@@ -43,15 +43,11 @@ async function stockOf(sku) {
   return body.find((item) => item.sku === sku)
 }
 
-async function rabbitQueueDepth() {
-  const response = await fetch(`${RABBIT}/api/queues/%2F/${QUEUE}`, {
-    headers: { Authorization: `Basic ${Buffer.from(RABBIT_AUTH).toString('base64')}` },
-  })
-  return response.ok ? (await response.json()).messages ?? 0 : null
-}
-
-/** Reads events off the queue without consuming them. */
-async function rabbitEvents(count) {
+/**
+ * Reads events off the queue without consuming them. Asks for a fixed large count, because the
+ * management API's queue depth is a sampled statistic that lags behind recent publishes.
+ */
+async function rabbitEvents(count = 5000) {
   const response = await fetch(`${RABBIT}/api/queues/%2F/${QUEUE}/get`, {
     method: 'POST',
     headers: {
@@ -60,6 +56,7 @@ async function rabbitEvents(count) {
     },
     body: JSON.stringify({ count, ackmode: 'ack_requeue_true', encoding: 'auto' }),
   })
+  if (!response.ok) return []
   return (await response.json()).map((message) => JSON.parse(message.payload))
 }
 
@@ -193,10 +190,9 @@ async function expiry() {
 async function messaging(expiryRan) {
   console.log('\n-- RabbitMQ')
 
-  const depth = await rabbitQueueDepth()
-  check('the events queue exists and has messages', depth > 0, `depth ${depth}`)
+  const events = await rabbitEvents()
+  check('the events queue exists and has messages', events.length > 0)
 
-  const events = await rabbitEvents(Math.min(depth ?? 0, 2000))
   const types = new Set(events.map((event) => event.eventType))
   check('HoldCreated was published', types.has('HoldCreated'))
   check('HoldReleased was published', types.has('HoldReleased'))

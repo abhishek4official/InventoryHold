@@ -32,6 +32,7 @@ public static class DependencyInjection
             var redis = ConfigurationOptions.Parse(sp.GetRequiredService<IOptions<RedisOptions>>().Value.ConnectionString);
             redis.AbortOnConnectFail = false; // Keep retrying in the background rather than failing startup.
             redis.AsyncTimeout = 1000;        // A slow cache must not be slower than the database behind it.
+            redis.BacklogPolicy = BacklogPolicy.FailFast; // The default queues commands during an outage, stalling each request for seconds.
             return ConnectionMultiplexer.Connect(redis);
         });
         services.AddSingleton<IInventoryCache, RedisInventoryCache>();

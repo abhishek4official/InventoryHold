@@ -150,7 +150,7 @@ Stock from an expired hold becomes available within one sweep interval, unless a
 
 - **Stock decisions never use the cache.** The atomic update in MongoDB decides, so stale cache data can show a slightly wrong number but can't cause overselling.
 - **A cached Active hold past its expiry isn't trusted.** The service rechecks `expiresAt` on every hit and goes to the database.
-- **Fail-open:** if Redis is down, reads fall back to MongoDB and a warning is logged.
+- **Fail-open:** if Redis is down, reads fall back to MongoDB and a warning is logged. The client is set to `BacklogPolicy.FailFast`; its default queues commands during an outage, which stalled each request for about 11 seconds when tested.
 - **Known race:** a reader that misses the cache can write back a value just after a concurrent mutation invalidated it. The TTLs bound how long that lasts.
 
 ### Messaging
@@ -172,7 +172,7 @@ A durable topic exchange `inventory.holds` with routing keys `hold.created`, `ho
 
 Events carry everything a consumer needs, so it needn't call back. Messages are persistent and use publisher confirms. `eventId` lets consumers de-duplicate.
 
-**Known limitation:** events are published after the MongoDB write, and a publish failure is logged rather than failing the request, because the hold has already been committed. A broker outage therefore loses those events. The fix is a transactional outbox, which needs the same replica set as above.
+**Known limitation:** events are published after the MongoDB write, and a publish failure is logged rather than failing the request, because the hold has already been committed. A broker outage therefore loses those events, and each create or release can also take up to `PublishTimeoutSeconds` (5s) while the publish attempt fails. The fix is a transactional outbox, which needs the same replica set as above and would also take publishing out of the request path.
 
 ### Frontend
 

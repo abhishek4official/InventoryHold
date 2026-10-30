@@ -55,6 +55,8 @@ These were errors in the AI's own output, found while checking it. They're the c
 3. **A known-vulnerable dependency.** The template's OpenAPI package pulled in `Microsoft.OpenApi` 2.0.0, flagged high severity (NU1903) at build. Upgrading the direct package removed it, confirmed with `dotnet list package --vulnerable`.
 4. **Ambiguous overloads.** Two cache helpers shared the name `TryCacheAsync`, and passing a method group could have been ambiguous between them. The read helper was renamed `ReadCacheAsync` before the first compile.
 5. **A stray import.** A test file imported `StackExchange.Redis`, which the test project doesn't reference and shouldn't need.
+6. **A Redis outage stalled every request.** The design said a cache outage must not hurt requests, and the mocked unit tests agreed, since a mock throws instantly. Stopping the real Redis container showed that requests still succeeded but took about 11 seconds, because StackExchange.Redis queues commands while reconnecting by default. Setting `BacklogPolicy.FailFast` brought them to about 20 ms. No unit test here could have caught this; only breaking the real dependency did.
+7. **A bug in the check script itself.** The first end-to-end run reported `HoldExpired` missing. Reading the queue directly showed the events were there, and that the script was trusting RabbitMQ's sampled queue depth, which lags behind recent publishes. The script was fixed rather than the service, after confirming which of the two was wrong.
 
 ## Verification
 
@@ -64,8 +66,10 @@ These were errors in the AI's own output, found while checking it. They're the c
 
 **End-to-end check.** `scripts/e2e-check.mjs` runs against the real stack: every status code, N+40 parallel holds on N units, 20 parallel releases of one hold, sweeper expiry, Redis invalidation, and RabbitMQ event contents.
 
-<!-- TODO after the Docker run: state the result of `node scripts/e2e-check.mjs` here. Do not claim it passed until it has. -->
+The script passes against the real stack, including 43 parallel holds on 3 units (exactly 3 won, stock reached 0 and never went negative) and 20 parallel releases (exactly one succeeded, stock restored once).
 
-**Frontend.** Driven in a browser: placing a hold, over-requesting (the API's message appears), release with confirmation, inventory updating with no refresh, and the countdown reaching zero. This first pass ran against a throwaway mock API, so it verified UI behaviour only.
+**Failure testing.** Containers were stopped by hand while the API ran. With Redis down, reads, creates and releases all succeeded and the cache reconnected on its own afterwards. With RabbitMQ down, creating a hold succeeded in about 4 seconds, that event was lost as documented, and publishing resumed when the broker returned. Restarting the API kept live stock rather than re-seeding it.
+
+**Frontend.** Driven in a browser against the real stack: over-requesting (the API's message appears), a multi-product hold, release with confirmation, and inventory updating with no refresh. The countdown reaching zero was driven against a throwaway mock API with short holds, so that part verified UI behaviour only; real expiry was verified through the API.
 
 > **YOUR INPUT:** What did you check yourself? For example, which code you read line by line, or tests you broke on purpose to confirm they fail.
