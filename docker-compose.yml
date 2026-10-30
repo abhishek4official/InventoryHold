@@ -2,7 +2,7 @@ services:
   mongo:
     image: mongo:8.0
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -14,7 +14,7 @@ services:
   redis:
     image: redis:7.4-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -24,8 +24,8 @@ services:
   rabbitmq:
     image: rabbitmq:4.1-management-alpine
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-inventory}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-inventory-dev-only}
@@ -51,6 +51,10 @@ services:
       RabbitMq__Password: ${RABBITMQ_PASSWORD:-inventory-dev-only}
       Holds__DefaultDurationMinutes: ${HOLD_DURATION_MINUTES:-15}
       Holds__SweepIntervalSeconds: ${HOLD_SWEEP_INTERVAL_SECONDS:-30}
+      # Off here so that the brief's plain endpoints can be called directly. See "Security" in the README.
+      Security__Hmac__Enabled: ${HMAC_ENABLED:-false}
+      Security__Hmac__Clients__web-ui: ${HMAC_WEB_SECRET:-}
+      Security__Hmac__Clients__checkout: ${HMAC_CHECKOUT_SECRET:-}
     depends_on:
       mongo:
         condition: service_healthy
@@ -69,6 +73,8 @@ services:
       context: ./frontend
     ports:
       - "3000:80"
+    environment:
+      HMAC_WEB_SECRET: ${HMAC_WEB_SECRET:-}
     depends_on:
       api:
         condition: service_healthy

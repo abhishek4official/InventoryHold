@@ -19,6 +19,8 @@ docker-compose up --build
 | OpenAPI document | http://localhost:8080/openapi/v1.json |
 | RabbitMQ management | http://localhost:15672 (`inventory` / `inventory-dev-only`) |
 
+MongoDB, Redis and RabbitMQ are published on `127.0.0.1` only, so they can't be reached from other machines.
+
 Compose works with no configuration. To change a setting, copy `.env.example` to `.env`.
 
 To watch holds expire without waiting 15 minutes:
@@ -219,7 +221,66 @@ The interface uses [MUI](https://mui.com) (Material UI, MIT licence) with a cust
 
 ### Out of scope
 
-Authentication (per the brief, so `customerId` is taken on trust), a real product catalogue, and idempotency keys on POST. A retried POST currently creates a second hold; for production I'd add an `Idempotency-Key` header.
+User login (per the brief, so `customerId` is taken on trust), a real product catalogue, and idempotency keys on POST. A retried POST currently creates a second hold; for production I'd add an `Idempotency-Key` header.
+
+## Security
+
+The brief doesn't expect authentication, so `docker-compose up` leaves request signing **off**, and its endpoints can be called directly. The code itself defaults to **on**: outside compose and local development, a deployment that forgets the setting stays protected, and won't start without secrets.
+
+### Turning it on
+
+Set these in `.env`, or in the shell. Generate each secret with `openssl rand -hex 32`:
+
+```
+HMAC_ENABLED=true
+HMAC_WEB_SECRET=...
+HMAC_CHECKOUT_SECRET=...
+```
+
+The web app keeps working, and unsigned calls to `:8080` now get a 401. To make a signed call by hand:
+
+```bash
+HMAC_CHECKOUT_SECRET=... node scripts/signed-request.mjs GET api/inventory
+```
+
+To check everything with signing on, run `node scripts/e2e-check.mjs` with `HMAC_CHECKOUT_SECRET` set to the same value.
+
+### How a client signs
+
+HMAC fits because this API's callers are other systems, such as checkout, that can keep a secret. Each client sends four headers: `X-Client-Id`, `X-Timestamp` (Unix seconds), `X-Nonce` (unique per request) and `X-Signature`, the lowercase hex HMAC-SHA256 of:
+
+```
+METHOD
+PATH_AND_QUERY
+TIMESTAMP
+NONCE
+SHA256_HEX_OF_BODY
+```
+
+| Threat | Defence | Response |
+|---|---|---|
+| Caller without the secret | Signature check, in constant time | 401 `invalid_signature` |
+| Altered method, path, query or body | All are part of what's signed | 401 `invalid_signature` |
+| Replay of a captured request | Nonce remembered in Redis, set atomically | 401 `replayed_request` |
+| Replay long after capture | Timestamp must be within 5 minutes | 401 `stale_timestamp` |
+| Probing for client IDs | An unknown client gets the same answer as a bad signature | 401 `invalid_signature` |
+| Oversized body | Rejected before hashing | 413 `body_too_large` |
+
+The signature is checked before the nonce, so a caller without a secret can't fill Redis. `/health` and `/openapi` stay open.
+
+### The web app
+
+A secret in the React bundle would be readable by anyone, so the browser doesn't sign. nginx signs on its way to the API (`frontend/sign.js`), reading the secret from its environment so it's never written to disk. nginx also replaces any of these headers a browser sends.
+
+### What this doesn't protect
+
+- **It doesn't identify people.** HMAC proves a request came from a trusted system. Anyone who can open the web app can use it, and one customer could release another's hold. Hold ownership needs user login.
+- **If Redis is down, replay protection weakens.** The nonce check fails open so that a cache outage can't stop checkout, leaving the 5-minute timestamp window as the limit. Replayed releases are harmless either way, because a hold can only close once. A replayed create within that window could place an extra hold, which would then expire.
+- **It doesn't hide anything.** HMAC proves a request wasn't altered, but anyone on the network can still read it, so production needs TLS in front of this.
+
+### Next steps for production
+
+TLS, MongoDB and Redis passwords, rate limiting, user login with hold ownership, and secrets from a vault with a rotation process. Rotation can already be done without downtime by adding a second client ID.
 
 ## AI usage
 

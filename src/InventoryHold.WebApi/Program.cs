@@ -1,8 +1,10 @@
 using System.Text.Json.Serialization;
+using InventoryHold.Domain.Security;
 using InventoryHold.Domain.Services;
 using InventoryHold.Infrastructure;
 using InventoryHold.WebApi.BackgroundServices;
 using InventoryHold.WebApi.ErrorHandling;
+using InventoryHold.WebApi.Security;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,6 +27,16 @@ builder.Services.AddOptions<HoldOptions>()
     .ValidateOnStart();
 builder.Services.AddScoped<IHoldService, HoldService>();
 
+builder.Services.AddOptions<HmacOptions>()
+    .Bind(builder.Configuration.GetSection(HmacOptions.SectionName))
+    .Validate(o => !o.Enabled || o.HasUsableClients,
+        $"HMAC is enabled, so at least one client secret is required, and each must be {HmacOptions.MinimumSecretLength}+ characters. " +
+        "Set Security:Hmac:Clients (HMAC_WEB_SECRET and HMAC_CHECKOUT_SECRET under docker-compose), or set Security:Hmac:Enabled to false.")
+    .Validate(o => o.TimestampToleranceSeconds > 0, "Security:Hmac:TimestampToleranceSeconds must be positive.")
+    .Validate(o => o.MaxBodyBytes > 0, "Security:Hmac:MaxBodyBytes must be positive.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<HmacSignatureVerifier>();
+
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddHostedService<HoldExpirySweeper>();
 
@@ -32,6 +44,7 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+app.UseMiddleware<HmacAuthenticationMiddleware>();
 
 app.MapOpenApi();
 app.MapHealthChecks("/health");

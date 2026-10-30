@@ -37,6 +37,7 @@ public static class DependencyInjection
             return ConnectionMultiplexer.Connect(redis);
         });
         services.AddSingleton<IInventoryCache, RedisInventoryCache>();
+        services.AddSingleton<INonceStore, RedisNonceStore>();
 
         services.AddSingleton<IEventPublisher, RabbitMqEventPublisher>();
 

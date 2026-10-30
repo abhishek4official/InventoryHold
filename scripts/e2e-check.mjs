@@ -7,11 +7,17 @@
 // To include the expiry check, start the stack with short holds first:
 //   HOLD_DURATION_MINUTES=0.25 HOLD_SWEEP_INTERVAL_SECONDS=5 docker-compose up --build -d
 //
+// To test with request signing on, start the stack with HMAC_ENABLED=true and both secrets, then
+// run this with HMAC_CHECKOUT_SECRET set to the same value.
+//
 // Flags: --api-only skips the RabbitMQ and Redis checks.
 
 import { execFileSync } from 'node:child_process'
+import { signedHeaders } from './hmac.mjs'
 
 const API = process.env.API_URL ?? 'http://localhost:8080'
+const WEB = process.env.WEB_URL ?? 'http://localhost:3000'
+const HMAC_SECRET = process.env.HMAC_CHECKOUT_SECRET
 const RABBIT = process.env.RABBIT_URL ?? 'http://localhost:15672'
 const RABBIT_AUTH = `${process.env.RABBITMQ_USER ?? 'inventory'}:${process.env.RABBITMQ_PASSWORD ?? 'inventory-dev-only'}`
 const QUEUE = 'inventory-hold.events'
@@ -26,10 +32,14 @@ function check(name, passed, detail = '') {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function call(method, path, body) {
+  const json = body ? JSON.stringify(body) : undefined
   const response = await fetch(API + path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: {
+      ...(json ? { 'Content-Type': 'application/json' } : {}),
+      ...(HMAC_SECRET ? signedHeaders({ secret: HMAC_SECRET, method, path, body: json ?? '' }) : {}),
+    },
+    body: json,
   })
   const text = await response.text()
   return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null }
@@ -131,10 +141,111 @@ async function itemTracking() {
   await Promise.all(won.map((result) => call('DELETE', `/api/holds/${result.body.id}`)))
 }
 
+/** Sends a request with the given headers, signing nothing itself. */
+async function raw(method, path, headers = {}, body) {
+  const response = await fetch(API + path, {
+    method,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
+    body,
+  })
+  const text = await response.text()
+  return { status: response.status, code: text ? JSON.parse(text).code : undefined, headers: response.headers }
+}
+
+async function webProxy() {
+  console.log('\n-- Web proxy on :3000')
+
+  const page = await fetch(`${WEB}/`)
+  check('the page sets security headers',
+    page.headers.get('x-content-type-options') === 'nosniff' && page.headers.get('x-frame-options') === 'DENY')
+
+  const { body: inventory } = await call('GET', '/api/inventory')
+  const sku = inventory.find((item) => item.available >= 1).sku
+  const created = await fetch(`${WEB}/api/holds`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerId: 'e2e-web', items: [{ sku, quantity: 1 }] }),
+  })
+  check('an unsigned POST through the proxy succeeds', created.status === 201, `got ${created.status}`)
+  const hold = await created.json()
+
+  const listed = await fetch(`${WEB}/api/holds?status=Active`)
+  check('a GET with a query string through the proxy succeeds', listed.status === 200, `got ${listed.status}`)
+
+  const released = await fetch(`${WEB}/api/holds/${hold.id}`, { method: 'DELETE' })
+  check('an unsigned DELETE through the proxy succeeds', released.status === 200, `got ${released.status}`)
+
+  const huge = await fetch(`${WEB}/api/holds`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'x'.repeat(70 * 1024) })
+  check('the proxy rejects a body over 64 KB', huge.status === 413, `got ${huge.status}`)
+}
+
+async function signatures() {
+  console.log('\n-- Request signing')
+
+  const path = '/api/inventory'
+  const signed = (overrides = {}) => signedHeaders({ secret: HMAC_SECRET, method: 'GET', path, ...overrides })
+
+  const unsigned = await raw('GET', path)
+  check('an unsigned request is 401', unsigned.status === 401 && unsigned.code === 'missing_signature', `${unsigned.status} ${unsigned.code}`)
+  check('a 401 says how to authenticate', unsigned.headers.get('www-authenticate') === 'HMAC-SHA256')
+  check('every endpoint needs a signature', (await raw('POST', '/api/holds', {}, '{}')).status === 401 &&
+    (await raw('GET', '/api/holds?status=Active')).status === 401 &&
+    (await raw('GET', '/api/holds/some-id')).status === 401 &&
+    (await raw('DELETE', '/api/holds/some-id')).status === 401)
+
+  check('a signed request is 200', (await raw('GET', path, signed())).status === 200)
+
+  const wrongSecret = await raw('GET', path, signed({ secret: 'x'.repeat(40) }))
+  check('a wrong secret is 401', wrongSecret.status === 401 && wrongSecret.code === 'invalid_signature')
+  const unknownClient = await raw('GET', path, signed({ clientId: 'stranger' }))
+  check('an unknown client gets the same answer as a bad signature', unknownClient.status === 401 && unknownClient.code === 'invalid_signature')
+
+  const body = JSON.stringify({ customerId: 'e2e', items: [{ sku: 'MS-WL-02', quantity: 1 }] })
+  const tampered = body.replace('"quantity":1', '"quantity":2')
+  const tamperedResult = await raw('POST', '/api/holds', signedHeaders({ secret: HMAC_SECRET, method: 'POST', path: '/api/holds', body }), tampered)
+  check('a tampered body is 401', tamperedResult.status === 401 && tamperedResult.code === 'invalid_signature')
+
+  const otherPath = await raw('GET', '/api/holds?status=Active', signed())
+  check('a signature for another path is 401', otherPath.status === 401 && otherPath.code === 'invalid_signature')
+
+  const old = String(Math.floor(Date.now() / 1000) - 3600)
+  const stale = await raw('GET', path, signed({ timestamp: old }))
+  check('a timestamp an hour old is 401', stale.status === 401 && stale.code === 'stale_timestamp')
+
+  const once = signed()
+  const first = await raw('GET', path, once)
+  const replay = await raw('GET', path, once)
+  check('the same signed request sent twice is rejected the second time',
+    first.status === 200 && replay.status === 401 && replay.code === 'replayed_request', `${first.status}, ${replay.status} ${replay.code}`)
+
+  const parallel = signed()
+  const racing = await Promise.all(Array.from({ length: 20 }, () => raw('GET', path, parallel)))
+  check('20 parallel copies of one signed request: exactly one succeeds', racing.filter((r) => r.status === 200).length === 1)
+
+  const bigBody = 'x'.repeat(70 * 1024)
+  const big = await raw('POST', '/api/holds', signedHeaders({ secret: HMAC_SECRET, method: 'POST', path: '/api/holds', body: bigBody }), bigBody)
+  check('a body over 64 KB is 413', big.status === 413 && big.code === 'body_too_large', `${big.status} ${big.code}`)
+
+  check('/health stays open for the healthcheck', (await fetch(`${API}/health`)).status === 200)
+}
+
 function checkSerialCounts(inventory) {
-  const expected = inventory.filter((item) => item.isSerialized).reduce((sum, item) => sum + item.held, 0)
-  const assigned = Number(mongoEval('db.inventory_units.countDocuments({ holdId: { $ne: null } })'))
-  check('units assigned to holds match the held counts', assigned === expected, `${assigned} assigned, ${expected} held`)
+  // Reads MongoDB directly, comparing each product's count with the records behind it.
+  const counts = JSON.parse(mongoEval(`
+    const assigned = {}, active = {};
+    db.inventory_units.find({ HoldId: { $ne: null } }).forEach((u) => { assigned[u.Sku] = (assigned[u.Sku] || 0) + 1 });
+    db.holds.find({ Status: 'Active' }).forEach((h) => h.Lines.forEach((l) => { active[l.Sku] = (active[l.Sku] || 0) + l.Quantity }));
+    print(JSON.stringify({ assigned, active }));
+  `))
+  check('the database has a held count for every product', inventory.length > 0)
+  for (const item of inventory) {
+    check(`${item.sku}: held count matches active holds`, item.held === (counts.active[item.sku] ?? 0),
+      `${item.held} held, ${counts.active[item.sku] ?? 0} in active holds`)
+    if (item.isSerialized) {
+      check(`${item.sku}: held count matches assigned units`, item.held === (counts.assigned[item.sku] ?? 0),
+        `${item.held} held, ${counts.assigned[item.sku] ?? 0} assigned`)
+    }
+  }
 }
 
 async function endpoints() {
@@ -302,6 +413,8 @@ await endpoints()
 await races()
 const expiryRan = await expiry()
 await itemTracking()
+await webProxy()
+if (HMAC_SECRET) await signatures()
 if (!API_ONLY) {
   checkSerialCounts((await call('GET', '/api/inventory')).body)
   await caching()
