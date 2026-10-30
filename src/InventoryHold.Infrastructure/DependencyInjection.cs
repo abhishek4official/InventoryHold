@@ -26,6 +26,7 @@ public static class DependencyInjection
             sp.GetRequiredService<IMongoClient>().GetDatabase(sp.GetRequiredService<IOptions<MongoOptions>>().Value.DatabaseName));
         services.AddSingleton<IProductRepository, MongoProductRepository>();
         services.AddSingleton<IHoldRepository, MongoHoldRepository>();
+        services.AddSingleton<IInventoryUnitRepository, MongoInventoryUnitRepository>();
 
         services.AddSingleton<IConnectionMultiplexer>(sp =>
         {

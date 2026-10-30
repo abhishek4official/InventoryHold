@@ -20,6 +20,7 @@ namespace InventoryHold.Domain.Services;
 public sealed class HoldService(
     IHoldRepository holds,
     IProductRepository products,
+    IInventoryUnitRepository units,
     IInventoryCache cache,
     IEventPublisher publisher,
     TimeProvider clock,
@@ -36,11 +37,13 @@ public sealed class HoldService(
 
         // Reserving in a fixed order keeps competing multi-item holds from repeatedly undoing each other.
         var items = request.Items.OrderBy(i => i.Sku, StringComparer.Ordinal).ToList();
-        var lines = await BuildLinesAsync(items, cancellationToken);
+        var (lines, serialized) = await BuildLinesAsync(items, cancellationToken);
 
-        await ReserveAllAsync(lines);
+        // The ID comes first so that serial-numbered units can be assigned to the hold as they are claimed.
+        var holdId = Guid.NewGuid().ToString();
+        lines = await ReserveAllAsync(holdId, lines, serialized);
 
-        var hold = Hold.Create(request.CustomerId, lines, clock.GetUtcNow(), _options.DefaultDuration);
+        var hold = Hold.Create(holdId, request.CustomerId, lines, clock.GetUtcNow(), _options.DefaultDuration);
         try
         {
             await holds.InsertAsync(hold, CancellationToken.None);
@@ -130,26 +133,45 @@ public sealed class HoldService(
             return cached;
 
         var all = await products.GetAllAsync(cancellationToken);
-        var inventory = all.Select(p => new InventoryItemResponse(p.Sku, p.Name, p.Available, p.Held)).ToList();
+        var now = clock.GetUtcNow();
+        var inventory = all.Select(p => new InventoryItemResponse(
+            p.Sku, p.Name, p.PartNumber, p.Manufacturer, p.Category, p.WarehouseLocation, p.UnitOfMeasure,
+            p.Available, p.Held, p.ReorderPoint,
+            LowStock: p.Available <= p.ReorderPoint,
+            p.IsSerialized,
+            ApproxShipDate: p.Available > 0 ? ShipDateEstimator.Estimate(now, p.HandlingDays, _options.ShippingCutoffHourUtc) : null))
+            .ToList();
 
         await TryCacheAsync(ct => cache.SetInventoryAsync(inventory, ct), cancellationToken);
         return inventory;
     }
 
-    private async Task<List<HoldLine>> BuildLinesAsync(List<HoldItemRequest> items, CancellationToken cancellationToken)
+    private async Task<(List<HoldLine> Lines, HashSet<string> Serialized)> BuildLinesAsync(
+        List<HoldItemRequest> items, CancellationToken cancellationToken)
     {
         var skus = items.Select(i => i.Sku).ToList();
-        var found = await products.GetBySkusAsync(skus, cancellationToken);
-        var names = found.ToDictionary(p => p.Sku, p => p.Name);
+        var found = (await products.GetBySkusAsync(skus, cancellationToken)).ToDictionary(p => p.Sku);
 
-        var unknown = skus.Where(s => !names.ContainsKey(s)).ToList();
+        var unknown = skus.Where(s => !found.ContainsKey(s)).ToList();
         if (unknown.Count > 0)
             throw new ProductNotFoundException(unknown);
 
-        return items.Select(i => new HoldLine(i.Sku, names[i.Sku], i.Quantity)).ToList();
+        var now = clock.GetUtcNow();
+        var lines = items.Select(i =>
+        {
+            var product = found[i.Sku];
+            var shipDate = ShipDateEstimator.Estimate(now, product.HandlingDays, _options.ShippingCutoffHourUtc);
+            return new HoldLine(i.Sku, product.Name, i.Quantity, product.PartNumber, shipDate);
+        }).ToList();
+
+        return (lines, found.Values.Where(p => p.IsSerialized).Select(p => p.Sku).ToHashSet());
     }
 
-    private async Task ReserveAllAsync(List<HoldLine> lines)
+    /// <summary>
+    /// The atomic stock count decides whether a line can be held; only then are that many specific
+    /// units claimed. Returns the lines with their assigned serial numbers.
+    /// </summary>
+    private async Task<List<HoldLine>> ReserveAllAsync(string holdId, List<HoldLine> lines, HashSet<string> serialized)
     {
         var reserved = new List<HoldLine>(lines.Count);
         try
@@ -159,11 +181,20 @@ public sealed class HoldService(
                 if (!await products.TryReserveAsync(line.Sku, line.Quantity, CancellationToken.None))
                     throw new InsufficientStockException(line.Sku, line.Quantity);
                 reserved.Add(line);
+
+                if (!serialized.Contains(line.Sku))
+                    continue;
+
+                var serials = await units.ClaimAsync(line.Sku, holdId, line.Quantity, CancellationToken.None);
+                if (serials.Count < line.Quantity)
+                    throw new InsufficientStockException(line.Sku, line.Quantity);
+                reserved[^1] = line with { SerialNumbers = serials };
             }
+            return reserved;
         }
         catch
         {
-            await RestoreLinesAsync(null, reserved);
+            await RestoreLinesAsync(holdId, reserved);
             throw;
         }
     }
@@ -182,8 +213,18 @@ public sealed class HoldService(
     }
 
     /// <summary>Attempts every line even if one fails, so one bad write does not strand the others.</summary>
-    private async Task RestoreLinesAsync(string? holdId, IEnumerable<HoldLine> lines)
+    private async Task RestoreLinesAsync(string holdId, IEnumerable<HoldLine> lines)
     {
+        // Units go back before the counts, so a count never promises a unit that is not yet free.
+        try
+        {
+            await units.ReleaseAsync(holdId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Serial numbers not released and need reconciliation: hold {HoldId}", holdId);
+        }
+
         foreach (var line in lines)
         {
             try
@@ -258,7 +299,7 @@ public sealed class HoldService(
         : new HoldExpiredException(hold.Id);
 
     private static List<HoldItemResponse> ToItems(Hold hold) =>
-        hold.Lines.Select(l => new HoldItemResponse(l.Sku, l.ProductName, l.Quantity)).ToList();
+        hold.Lines.Select(l => new HoldItemResponse(l.Sku, l.ProductName, l.PartNumber, l.Quantity, l.ApproxShipDate, l.SerialNumbers ?? [])).ToList();
 
     private static HoldResponse ToResponse(Hold hold) =>
         new(hold.Id, hold.CustomerId, hold.Status, ToItems(hold), hold.CreatedAt, hold.ExpiresAt, hold.ClosedAt);

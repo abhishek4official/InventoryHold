@@ -29,6 +29,8 @@ judgement being assessed here is yours. Before submitting:
 
 - **Verification:** with Docker missing, the AI offered to skip Docker verification. I chose to install Docker so the stack could be tested for real, because `docker-compose up --build` is a stated requirement and an unrun compose file proves nothing.
 - **Delivery:** I chose local commits and pushing myself, over giving the AI access to publish to GitHub.
+- **Item details:** I asked for approximate ship date, serial number, part number and related fields, with no new endpoints. The AI put them inside the existing responses and modelled serials per physical unit.
+- **API scope:** I had the AI compare the running API against the PDF. That showed one endpoint the brief doesn't list, `GET /api/holds`. The AI first offered to replace it by storing hold IDs in the browser; I questioned that and asked about Redis. The AI explained a browser can't reach Redis directly, so it would still need an endpoint. I decided to keep the status list, giving 5 endpoints.
 
 > **YOUR INPUT:** Add suggestions you personally **rejected or changed**, and why. The brief asks for this specifically, and it's the part only you can write. Reading the code and README with a critical eye should produce some. Candidates to form your own view on:
 > - Is the crash window in the README an acceptable trade-off, or would you use transactions?
@@ -60,13 +62,13 @@ These were errors in the AI's own output, found while checking it. They're the c
 
 ## Verification
 
-**Unit tests.** The AI wrote the suite alongside the domain code, with cases chosen from the brief's edge cases: non-existent, already-released and expired holds, partial failures, and concurrency. 40 NUnit tests, all mocked and needing no infrastructure.
+**Unit tests.** The AI wrote the suite alongside the domain code, with cases chosen from the brief's edge cases: non-existent, already-released and expired holds, partial failures, concurrency, serial number handling and ship dates. 54 NUnit tests, all mocked and needing no infrastructure.
 
 **Limits of the unit tests.** The parallel "no overselling" test uses a mock that simulates an atomic decrement, so it proves the service logic and not that MongoDB behaves atomically. That is why a separate end-to-end check exists.
 
 **End-to-end check.** `scripts/e2e-check.mjs` runs against the real stack: every status code, N+40 parallel holds on N units, 20 parallel releases of one hold, sweeper expiry, Redis invalidation, and RabbitMQ event contents.
 
-The script passes against the real stack, including 43 parallel holds on 3 units (exactly 3 won, stock reached 0 and never went negative) and 20 parallel releases (exactly one succeeded, stock restored once).
+The script passes against the real stack, including 43 parallel holds on 3 units (exactly 3 won, stock reached 0 and never went negative) and 20 parallel releases (exactly one succeeded, stock restored once). For serial-tracked items, parallel holds on 10 units gave exactly 5 winning pairs, no serial was given to two holds, and the units assigned always matched the held counts.
 
 **Failure testing.** Containers were stopped by hand while the API ran. With Redis down, reads, creates and releases all succeeded and the cache reconnected on its own afterwards. With RabbitMQ down, creating a hold succeeded in about 4 seconds, that event was lost as documented, and publishing resumed when the broker returned. Restarting the API kept live stock rather than re-seeding it.
 

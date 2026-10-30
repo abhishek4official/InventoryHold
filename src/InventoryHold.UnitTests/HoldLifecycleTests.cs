@@ -258,14 +258,14 @@ public class HoldLifecycleTests : HoldServiceTestBase
 
         var result = await Service.GetInventoryAsync(CancellationToken.None);
 
-        Assert.That(result.Single(), Is.EqualTo(new InventoryItemResponse("SKU-A", "A", 5, 1)));
+        Assert.That((result.Single().Sku, result.Single().Available, result.Single().Held), Is.EqualTo(("SKU-A", 5, 1)));
         Cache.Verify(c => c.SetInventoryAsync(It.IsAny<IReadOnlyList<InventoryItemResponse>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Test]
     public async Task Inventory_hit_skips_the_database()
     {
-        Cache.Setup(c => c.GetInventoryAsync(It.IsAny<CancellationToken>())).ReturnsAsync([new InventoryItemResponse("SKU-A", "A", 5, 1)]);
+        Cache.Setup(c => c.GetInventoryAsync(It.IsAny<CancellationToken>())).ReturnsAsync([new InventoryItemResponse("SKU-A", "A", "P", "M", "C", "L", "EA", 5, 1, 0, false, false, null)]);
 
         await Service.GetInventoryAsync(CancellationToken.None);
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useActiveHolds, useRefreshStockAndHolds, useReleaseHold } from '../api/hooks'
 import type { Hold } from '../api/types'
+import { formatDate } from '../format'
 
 function useNow(intervalMs: number) {
   const [now, setNow] = useState(() => Date.now())
@@ -75,6 +76,12 @@ function HoldRow({ hold, remainingMs }: { hold: Hold; remainingMs: number }) {
         {hold.items.map((item) => (
           <li key={item.sku}>
             {item.quantity} × {item.productName}
+            <div className="muted small">
+              Part {item.partNumber} · Ships about {formatDate(item.approxShipDate)}
+            </div>
+            {item.serialNumbers.length > 0 && (
+              <div className="muted small">Serials: {item.serialNumbers.join(', ')}</div>
+            )}
           </li>
         ))}
       </ul>

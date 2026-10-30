@@ -64,6 +64,57 @@ function redisCli(...args) {
   return execFileSync('docker', ['compose', 'exec', '-T', 'redis', 'redis-cli', ...args], { encoding: 'utf8' }).trim()
 }
 
+function mongoEval(script) {
+  return execFileSync('docker', ['compose', 'exec', '-T', 'mongo', 'mongosh', 'inventory_hold', '--quiet', '--eval', script],
+    { encoding: 'utf8' }).trim()
+}
+
+async function itemTracking() {
+  console.log('\n-- Item details: part numbers, ship dates, serial numbers')
+
+  const { body: inventory } = await call('GET', '/api/inventory')
+  check('every product has a part number, manufacturer and location',
+    inventory.every((item) => item.partNumber && item.manufacturer && item.warehouseLocation))
+  check('in-stock products have an approximate ship date',
+    inventory.filter((item) => item.available > 0).every((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.approxShipDate)))
+
+  const counted = inventory.find((item) => !item.isSerialized && item.available >= 1)
+  const countedHold = (await placeHold(counted.sku, 1)).body
+  check('a quantity-tracked line has no serial numbers', countedHold.items[0].serialNumbers.length === 0)
+  check('a hold line carries its part number and ship date',
+    countedHold.items[0].partNumber === counted.partNumber && !!countedHold.items[0].approxShipDate)
+  await call('DELETE', `/api/holds/${countedHold.id}`)
+
+  const tracked = inventory.find((item) => item.isSerialized && item.available >= 2)
+  const first = (await placeHold(tracked.sku, 2)).body
+  const serials = first.items[0].serialNumbers
+  check('a serial-tracked line gets one distinct serial per unit', new Set(serials).size === 2, JSON.stringify(serials))
+  const stored = (await call('GET', `/api/holds/${first.id}`)).body
+  check('serial numbers survive being read back', JSON.stringify(stored.items[0].serialNumbers) === JSON.stringify(serials))
+
+  const second = (await placeHold(tracked.sku, 1)).body
+  check('a second hold cannot get the same serial', !serials.includes(second.items[0].serialNumbers[0]))
+  await call('DELETE', `/api/holds/${second.id}`)
+  await call('DELETE', `/api/holds/${first.id}`)
+  const again = (await placeHold(tracked.sku, 2)).body
+  check('released serials can be held again', JSON.stringify(again.items[0].serialNumbers) === JSON.stringify(serials))
+  await call('DELETE', `/api/holds/${again.id}`)
+
+  const pairs = Math.floor(tracked.available / 2)
+  const results = await Promise.all(Array.from({ length: pairs + 30 }, () => placeHold(tracked.sku, 2)))
+  const won = results.filter((result) => result.status === 201)
+  const claimed = won.flatMap((result) => result.body.items[0].serialNumbers)
+  check(`parallel holds on ${tracked.available} serial units: exactly ${pairs} win`, won.length === pairs, `won ${won.length}`)
+  check('no serial number is ever given to two holds', new Set(claimed).size === pairs * 2, `${claimed.length} claimed`)
+  await Promise.all(won.map((result) => call('DELETE', `/api/holds/${result.body.id}`)))
+}
+
+function checkSerialCounts(inventory) {
+  const expected = inventory.filter((item) => item.isSerialized).reduce((sum, item) => sum + item.held, 0)
+  const assigned = Number(mongoEval('db.inventory_units.countDocuments({ holdId: { $ne: null } })'))
+  check('units assigned to holds match the held counts', assigned === expected, `${assigned} assigned, ${expected} held`)
+}
+
 async function endpoints() {
   console.log('\n-- Endpoints and status codes')
 
@@ -228,7 +279,9 @@ async function caching() {
 await endpoints()
 await races()
 const expiryRan = await expiry()
+await itemTracking()
 if (!API_ONLY) {
+  checkSerialCounts((await call('GET', '/api/inventory')).body)
   await caching()
   await messaging(expiryRan)
 }

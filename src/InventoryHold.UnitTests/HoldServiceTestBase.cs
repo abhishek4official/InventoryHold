@@ -17,6 +17,7 @@ public abstract class HoldServiceTestBase
 
     protected Mock<IHoldRepository> Holds = null!;
     protected Mock<IProductRepository> Products = null!;
+    protected Mock<IInventoryUnitRepository> Units = null!;
     protected Mock<IInventoryCache> Cache = null!;
     protected Mock<IEventPublisher> Publisher = null!;
     protected FakeTimeProvider Clock = null!;
@@ -27,6 +28,7 @@ public abstract class HoldServiceTestBase
     {
         Holds = new Mock<IHoldRepository>();
         Products = new Mock<IProductRepository>();
+        Units = new Mock<IInventoryUnitRepository>();
         Cache = new Mock<IInventoryCache>();
         Publisher = new Mock<IEventPublisher>();
         Clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
@@ -42,6 +44,7 @@ public abstract class HoldServiceTestBase
         Service = new HoldService(
             Holds.Object,
             Products.Object,
+            Units.Object,
             Cache.Object,
             Publisher.Object,
             Clock,

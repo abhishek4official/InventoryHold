@@ -54,20 +54,28 @@ h2 {
 
 .layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+  margin-top: 16px;
 }
 
-.column {
-  display: grid;
-  gap: 16px;
-  min-width: 0;
+.table-scroll {
+  overflow-x: auto;
+}
+
+.low-stock {
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+.hold-items li {
+  margin-bottom: 6px;
 }
 
 @media (max-width: 800px) {
   .layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

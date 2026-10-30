@@ -13,5 +13,8 @@ public sealed class HoldOptions
 
     public int ListLimit { get; set; } = 100;
 
+    /// <summary>Orders after this UTC hour count as placed the next business day when estimating ship dates.</summary>
+    public int ShippingCutoffHourUtc { get; set; } = 14;
+
     public TimeSpan DefaultDuration => TimeSpan.FromMinutes(DefaultDurationMinutes);
 }

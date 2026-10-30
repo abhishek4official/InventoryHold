@@ -21,6 +21,7 @@ builder.Services.AddOptions<HoldOptions>()
     .Validate(o => o.SweepIntervalSeconds > 0, "Holds:SweepIntervalSeconds must be positive.")
     .Validate(o => o.SweepBatchSize > 0, "Holds:SweepBatchSize must be positive.")
     .Validate(o => o.ListLimit > 0, "Holds:ListLimit must be positive.")
+    .Validate(o => o.ShippingCutoffHourUtc is >= 0 and <= 23, "Holds:ShippingCutoffHourUtc must be 0 to 23.")
     .ValidateOnStart();
 builder.Services.AddScoped<IHoldService, HoldService>();
 

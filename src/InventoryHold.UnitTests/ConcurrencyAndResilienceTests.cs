@@ -139,7 +139,7 @@ public class ConcurrencyAndResilienceTests : HoldServiceTestBase
 
         var result = await Service.GetInventoryAsync(CancellationToken.None);
 
-        Assert.That(result.Single(), Is.EqualTo(new InventoryItemResponse("SKU-A", "A", 5, 0)));
+        Assert.That((result.Single().Sku, result.Single().Available), Is.EqualTo(("SKU-A", 5)));
     }
 
     [Test]

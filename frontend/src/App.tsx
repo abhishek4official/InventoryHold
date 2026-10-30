@@ -6,14 +6,10 @@ export default function App() {
   return (
     <main className="app">
       <h1>Inventory holds</h1>
+      <InventoryDashboard />
       <div className="layout">
-        <div className="column">
-          <InventoryDashboard />
-        </div>
-        <div className="column">
-          <CreateHoldForm />
-          <ActiveHoldsList />
-        </div>
+        <CreateHoldForm />
+        <ActiveHoldsList />
       </div>
     </main>
   )

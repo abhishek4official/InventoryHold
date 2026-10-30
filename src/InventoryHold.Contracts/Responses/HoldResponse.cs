@@ -11,4 +11,11 @@ public sealed record HoldResponse(
     DateTimeOffset ExpiresAt,
     DateTimeOffset? ClosedAt);
 
-public sealed record HoldItemResponse(string Sku, string ProductName, int Quantity);
+/// <summary>SerialNumbers lists the exact units held; it is empty for products not tracked by serial.</summary>
+public sealed record HoldItemResponse(
+    string Sku,
+    string ProductName,
+    string PartNumber,
+    int Quantity,
+    DateOnly? ApproxShipDate,
+    IReadOnlyList<string> SerialNumbers);

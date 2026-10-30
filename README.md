@@ -68,7 +68,7 @@ For this mode, set `RabbitMq__UserName` and `RabbitMq__Password` to match compos
 | `GET /api/holds?status=Active` | 200 | 400 invalid status |
 | `GET /health` | 200 | |
 
-`GET /api/holds` isn't in the brief's endpoint list. The Active Holds List needs it, because the alternative (the browser remembering hold IDs) would lose holds on refresh and hide other sessions' holds.
+The first four are the brief's required endpoints. `GET /api/holds` is the one addition: the Active Holds List needs it, because the alternative (the browser remembering hold IDs) would hide holds placed in any other browser. `GET /health` serves the container healthcheck.
 
 Errors are RFC 7807 ProblemDetails with a machine-readable `code`:
 
@@ -105,8 +105,27 @@ Dependencies point inward: WebApi → Infrastructure → Domain → Contracts. A
 
 - **`products`**: `_id` (SKU), `name`, `available`, `held`. Tracking `held` separately means the total on hand stays visible and a discrepancy can be spotted.
 - **`holds`**: `_id`, `customerId`, `status`, embedded `lines`, `createdAt`, `expiresAt`, `closedAt`. Lines are embedded because they belong to the hold and are always read with it. Product names are copied in so a hold still reads correctly if a product is renamed.
+- **`inventory_units`**: `_id` (serial number), `sku`, `holdId`. One document per physical unit of a serial-tracked product; a null `holdId` means it is free.
 - Closed holds are kept, not deleted, as an audit record.
 - Persistence classes are separate from domain entities, so the domain has no MongoDB dependency.
+
+### Item details
+
+These fields extend the existing responses, with no new endpoints. Where each one lives follows what it describes:
+
+| Field | Belongs to | Why |
+|---|---|---|
+| `partNumber`, `manufacturer` | Product | The manufacturer's identifier for the item. `sku` is this business's own, and several SKUs can share one part number |
+| `category`, `unitOfMeasure` | Product | Describes the item |
+| `warehouseLocation` | Product | A simplification: one bin per product. Real stock can sit in several, which would need stock per location |
+| `reorderPoint`, `lowStock` | Product | `lowStock` is true when `available` is at or below `reorderPoint` |
+| `isSerialized` | Product | High-value items are tracked per unit. Cheap accessories are only counted, because recording a serial for each isn't worth the cost |
+| `serialNumbers` | Hold line | A serial identifies one physical unit, so it's assigned when that unit is held, never stored on the product |
+| `approxShipDate` | Hold line and inventory | The hold keeps the date quoted to the customer. Inventory shows what an order placed now could expect, or null when sold out |
+
+**Serial numbers.** The atomic stock count still decides whether a hold succeeds. Only then are that many specific units claimed, each with its own atomic `findOneAndUpdate`, so no two holds can get the same serial. Releasing or expiring a hold frees its units first and then restores the count, so a count never promises a unit that isn't free yet. Units are claimed in serial order; a real warehouse might use first-in-first-out by receipt date.
+
+**Ship dates** are estimates: the order date (the next business day after the `ShippingCutoffHourUtc` cutoff), plus the product's handling days, skipping weekends. Public holidays and carrier transit time aren't modelled, which is why the field is "approximate".
 
 ### Concurrency
 
@@ -127,7 +146,7 @@ The check and the deduction are a single atomic operation on one document, so tw
 
 Transactions would make "deduct stock + insert hold" all-or-nothing, but MongoDB requires a replica set for them, which adds startup machinery for the sake of a narrow failure case.
 
-**Known limitation:** if the process dies between two steps, stock can be left out of step with holds. For example, a crash after reserving stock but before saving the hold leaves those units held with no owner. Failed restores are logged at Critical with the hold, SKU and quantity for reconciliation. For production I'd move to a replica set with transactions, or add a reconciliation job comparing `held` against active holds.
+**Known limitation:** if the process dies between two steps, stock can be left out of step with holds. For example, a crash after reserving stock but before saving the hold leaves those units, and any serial numbers claimed for them, held with no owner. Failed restores are logged at Critical with the hold, SKU and quantity for reconciliation. For production I'd move to a replica set with transactions, or add a reconciliation job comparing `held` against active holds.
 
 ### Expiry
 
@@ -164,7 +183,14 @@ A durable topic exchange `inventory.holds` with routing keys `hold.created`, `ho
   "occurredAt": "2026-01-01T12:00:00+00:00",
   "holdId": "b1e2...",
   "customerId": "customer-1",
-  "items": [{ "sku": "MS-WL-02", "productName": "Wireless Mouse", "quantity": 2 }],
+  "items": [{
+    "sku": "MN-27-4K",
+    "productName": "27-inch 4K Monitor",
+    "partNumber": "VD-27U4K-IPS",
+    "quantity": 2,
+    "approxShipDate": "2026-01-07",
+    "serialNumbers": ["MN-27-4K-00001", "MN-27-4K-00002"]
+  }],
   "expiresAt": "2026-01-01T12:15:00+00:00",
   "schemaVersion": 1
 }
