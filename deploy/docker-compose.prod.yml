@@ -4,7 +4,8 @@ name: inventory-hold
 
 services:
   mongo:
-    image: mongo:8.0
+    # 7.0 on purpose: MongoDB 8.x refuses to start on Linux kernels 6.19 to 7.0.13. See the README.
+    image: mongo:7.0
     restart: unless-stopped
     volumes:
       - mongo-data:/data/db

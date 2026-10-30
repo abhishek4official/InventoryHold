@@ -23,7 +23,7 @@ MongoDB, Redis and RabbitMQ are published on `127.0.0.1` only, so they can't be 
 
 Compose works with no configuration. To change a setting, copy `.env.example` to `.env`.
 
-**Known limitation:** MongoDB refuses to start on Linux kernels 6.19 through 7.0.13, including Ubuntu 26.04's, with the message "known incompatibility with this version of MongoDB" ([MongoDB's production notes](https://www.mongodb.com/docs/manual/administration/production-notes/)). To check, run `docker info --format '{{.KernelVersion}}'`. If it's affected, use a host with a kernel below 6.19, or 7.0.14 or later.
+**Why MongoDB 7.0:** MongoDB 8.x refuses to start on Linux kernels 6.19 through 7.0.13 ([production notes](https://www.mongodb.com/docs/manual/administration/production-notes/)), which include current GitHub Actions runners and Ubuntu 26.04. That would stop this project starting on those hosts, so it uses 7.0, which doesn't have the check and passes the full test suite on an affected runner. Nothing here needs an 8.x feature. Move to 8.x once your hosts are on kernel 7.0.14 or later; its data format is not interchangeable with 7.0's, so follow MongoDB's upgrade steps.
 
 To watch holds expire without waiting 15 minutes:
 
@@ -324,7 +324,7 @@ Images are also published to GitHub's container registry as `ghcr.io/abhishek4of
 
 ### Setting up deployment
 
-You need a Linux server with Docker and the Compose plugin, which you can reach over SSH. Its kernel must be below 6.19, or 7.0.14 or later, so check this before using Ubuntu 26.04 (see the [known limitation](#getting-started)).
+You need a Linux server with Docker and the Compose plugin, which you can reach over SSH.
 
 **1. On the server,** create the folder and its secrets. Generate each secret with `openssl rand -hex 32`:
 
