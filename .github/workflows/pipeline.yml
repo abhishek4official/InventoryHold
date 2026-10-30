@@ -1,0 +1,303 @@
+# Build, test and export on every push and pull request. Publishes images from main and version tags.
+# Deployment only ever runs when started by hand. See "CI/CD and deployment" in the README.
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy this version to production after the checks pass
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/inventoryhold
+
+# Naming the shell turns on pipefail. Without it, "node ... | tee" would hide a failing test run.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    name: Build and unit test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the solution
+        run: dotnet build InventoryHold.sln --configuration Release
+
+      - name: Run unit tests
+        run: dotnet test InventoryHold.sln --configuration Release --no-build --logger trx --results-directory out/test-results
+
+      - name: Publish the API
+        run: dotnet publish src/InventoryHold.WebApi/InventoryHold.WebApi.csproj --configuration Release --no-build --output out/api
+
+      - name: Lint and build the frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Export test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: out/test-results
+          if-no-files-found: warn
+
+      - name: Export the API build
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-build
+          path: out/api
+          if-no-files-found: error
+
+      - name: Export the frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/dist
+          if-no-files-found: error
+
+  end-to-end:
+    name: End-to-end (HMAC ${{ matrix.hmac }})
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        hmac: ["off", "on"]
+    env:
+      HOLD_DURATION_MINUTES: "0.25"
+      HOLD_SWEEP_INTERVAL_SECONDS: "5"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Throwaway secrets, used only by this run's containers.
+      - name: Generate secrets
+        if: matrix.hmac == 'on'
+        run: |
+          web="$(openssl rand -hex 32)"
+          checkout="$(openssl rand -hex 32)"
+          echo "::add-mask::$web"
+          echo "::add-mask::$checkout"
+          {
+            echo "HMAC_ENABLED=true"
+            echo "HMAC_WEB_SECRET=$web"
+            echo "HMAC_CHECKOUT_SECRET=$checkout"
+          } >> "$GITHUB_ENV"
+
+      - name: Start the stack
+        run: docker compose up --build --detach --wait --wait-timeout 300
+
+      - name: Run the end-to-end checks
+        run: node scripts/e2e-check.mjs 2>&1 | tee e2e-${{ matrix.hmac }}.log
+
+      - name: Collect container logs
+        if: always()
+        run: docker compose logs --no-color > containers-${{ matrix.hmac }}.log
+
+      - name: Export the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-hmac-${{ matrix.hmac }}
+          path: |
+            e2e-${{ matrix.hmac }}.log
+            containers-${{ matrix.hmac }}.log
+          if-no-files-found: warn
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
+  images:
+    name: Publish images and deployment bundle
+    needs: end-to-end
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choose the version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            version="$REF_NAME"
+          else
+            version="sha-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${IMAGE_PREFIX,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the images
+        env:
+          PREFIX: ${{ steps.version.outputs.image_prefix }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker build --tag "$PREFIX-api:$VERSION" --file src/InventoryHold.WebApi/Dockerfile .
+          docker build --tag "$PREFIX-frontend:$VERSION" frontend
+
+      - name: Push the images
+        env:
+          PREFIX: ${{ steps.version.outputs.image_prefix }}
+          VERSION: ${{ steps.version.outputs.version }}
+          IS_MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          for service in api frontend; do
+            docker push "$PREFIX-$service:$VERSION"
+            if [ "$IS_MAIN" = "true" ]; then
+              docker tag "$PREFIX-$service:$VERSION" "$PREFIX-$service:latest"
+              docker push "$PREFIX-$service:latest"
+            fi
+          done
+
+      - name: Export the images as files
+        env:
+          PREFIX: ${{ steps.version.outputs.image_prefix }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p out/images
+          docker save "$PREFIX-api:$VERSION" | gzip > out/images/inventoryhold-api.tar.gz
+          docker save "$PREFIX-frontend:$VERSION" | gzip > out/images/inventoryhold-frontend.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: out/images
+          if-no-files-found: error
+
+      - name: Create the deployment bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p out/bundle
+          tar --create --gzip --file "out/bundle/inventoryhold-deploy-$VERSION.tar.gz" \
+            --directory deploy docker-compose.prod.yml deploy.sh .env.example
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-bundle
+          path: out/bundle
+          if-no-files-found: error
+
+  release:
+    name: Attach the bundle to a GitHub Release
+    needs: images
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deployment-bundle
+          path: bundle
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" bundle/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+
+  deploy:
+    name: Deploy to production
+    needs: images
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VERSION: ${{ needs.images.outputs.version }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/inventory-hold' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deployment-bundle
+          path: bundle
+
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set on the production environment. See the README."
+              exit 1
+            fi
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Copy the bundle to the server
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+          scp -i ~/.ssh/deploy_key bundle/*.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/bundle.tar.gz"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && tar --extract --gzip --file bundle.tar.gz && rm bundle.tar.gz"
+
+      # The token lasts only for this job and goes through stdin, so it never appears in a process list.
+      - name: Deploy
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker login ghcr.io --username '$REGISTRY_USER' --password-stdin"
+          status=0
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "bash '$DEPLOY_PATH/deploy.sh' '$VERSION'" || status=$?
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "docker logout ghcr.io" || true
+          exit "$status"
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

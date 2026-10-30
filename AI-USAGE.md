@@ -22,6 +22,7 @@ The brief set the starting point, and my follow-up instructions changed the resu
 - **Security.** I raised that security had been missed and suggested HMAC.
 - **User interface.** I asked for a modern open-source React theme in place of the plain first version.
 - **Documentation.** I asked for architecture diagrams in a `doc` folder.
+- **Delivery pipeline.** I asked for a deployment pipeline that exports artifacts, with instructions in the README.
 - **Final review.** I asked for a review of the finished work against every requirement in the PDF.
 
 ## Human audit
@@ -71,6 +72,7 @@ These were errors in the AI's own output, found while checking it. They're the c
 9. **A check that could never fail.** An end-to-end check compared held counts with assigned units, but queried `holdId` when the stored field is `HoldId`, so it always counted zero. It passed only because nothing was held at the time. It failed once a real hold was active, which led to reading the database directly: the data was correct and the check was wrong. It now reconciles every product against both units and active holds.
 10. **A helper that broke on Windows.** Git Bash rewrites `/api/inventory` into a Windows file path, so the first version of `signed-request.mjs` failed. Paths are now given without the leading slash.
 11. **An invented API name.** The AI imported an icon, `DeleteOutline`, that the installed MUI version doesn't have. The type check failed the build, and the real name was confirmed by listing the package's files.
+12. **A pipeline step that could hide failures.** The first draft piped the end-to-end run through `tee` under GitHub's default shell, which has no `pipefail`, so failing tests would have shown as a success. The linter didn't flag it; it was found by reviewing the file. The workflow now names `bash` as its shell, which turns `pipefail` on.
 
 ## Verification
 
@@ -85,6 +87,8 @@ The script passes against the real stack, including 43 parallel holds on 3 units
 **Security testing.** With signing on, the script confirms that unsigned, wrongly signed, tampered, stale, replayed and oversized requests are each rejected, and that of 20 parallel copies of one signed request exactly one succeeds. A signature test vector computed separately in Node matches the C# code, and real traffic through nginx proves its JavaScript signer agrees as well. The API refuses to start with signing on and no secrets.
 
 **Failure testing.** Containers were stopped by hand while the API ran. With Redis down, reads, creates and releases all succeeded and the cache reconnected on its own afterwards. With RabbitMQ down, creating a hold succeeded in about 4 seconds, that event was lost as documented, and publishing resumed when the broker returned. Restarting the API kept live stock rather than re-seeding it.
+
+**Deployment testing.** The deployment script was run locally against images built on this machine: a first deployment, an upgrade that kept an active hold, and a deliberately broken version that rolled back to the previous one with the hold intact. The workflow file passed `actionlint`.
 
 **Frontend.** Driven in a browser against the real stack: placing a hold, over-requesting (the API's message appears), release through the confirmation dialog, inventory and its last-updated time changing with no refresh, the item list with search, the dark theme, and phone width. The countdown reaching zero and stock returning were also watched on the real app, with signing on. An earlier version of the page was tested with a multi-product hold.
 

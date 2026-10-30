@@ -1,0 +1,89 @@
+# Production stack. Runs published images instead of building, publishes only the web app and API,
+# and refuses to start without real secrets. Use it through deploy.sh, which sets IMAGE_TAG.
+name: inventory-hold
+
+services:
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-inventory}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  api:
+    image: ${IMAGE_PREFIX:-ghcr.io/abhishek4official/inventoryhold}-api:${IMAGE_TAG:?Run this through deploy.sh, which sets IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      Mongo__ConnectionString: mongodb://mongo:27017
+      Mongo__DatabaseName: inventory_hold
+      Redis__ConnectionString: redis:6379
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: ${RABBITMQ_USER:-inventory}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+      Holds__DefaultDurationMinutes: ${HOLD_DURATION_MINUTES:-15}
+      Holds__SweepIntervalSeconds: ${HOLD_SWEEP_INTERVAL_SECONDS:-30}
+      Security__Hmac__Enabled: "true"
+      Security__Hmac__Clients__web-ui: ${HMAC_WEB_SECRET:?Set HMAC_WEB_SECRET in .env}
+      Security__Hmac__Clients__checkout: ${HMAC_CHECKOUT_SECRET:?Set HMAC_CHECKOUT_SECRET in .env}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    image: ${IMAGE_PREFIX:-ghcr.io/abhishek4official/inventoryhold}-frontend:${IMAGE_TAG:?Run this through deploy.sh, which sets IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    environment:
+      HMAC_WEB_SECRET: ${HMAC_WEB_SECRET:?Set HMAC_WEB_SECRET in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mongo-data:
+  rabbitmq-data:

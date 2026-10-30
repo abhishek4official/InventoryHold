@@ -99,6 +99,8 @@ src/
 └── InventoryHold.UnitTests/       NUnit + Moq
 frontend/                          Vite + React + TypeScript + TanStack Query
 scripts/e2e-check.mjs              End-to-end check against the running stack
+deploy/                            Production compose file and deployment script
+.github/workflows/pipeline.yml     Build, test, publish and deploy
 ```
 
 Dependencies point inward: WebApi → Infrastructure → Domain → Contracts. All business rules are in `HoldService`, which knows only interfaces.
@@ -283,6 +285,111 @@ A secret in the React bundle would be readable by anyone, so the browser doesn't
 ### Next steps for production
 
 TLS, MongoDB and Redis passwords, rate limiting, user login with hold ownership, and secrets from a vault with a rotation process. Rotation can already be done without downtime by adding a second client ID.
+
+## CI/CD and deployment
+
+[`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml) is a GitHub Actions pipeline. It builds and tests every change, and publishes images from `main` and version tags. **It only deploys when you start it by hand**, so a normal push can't change production.
+
+```mermaid
+flowchart LR
+    build["Build and<br/>unit test"] --> e2e["End-to-end tests<br/>HMAC off and on"]
+    e2e --> images["Publish images<br/>and bundle"]
+    images -->|"Version tag"| release["GitHub Release"]
+    images -->|"Started by hand"| deploy["Deploy to server<br/>over SSH"]
+```
+
+| What triggers it | What runs |
+|---|---|
+| Pull request | Build, unit tests, end-to-end tests |
+| Push to `main` | The above, plus publishing images tagged `sha-abc1234` and `latest` |
+| Tag such as `v1.0.0` | The above without `latest`, tagged with the version, plus a GitHub Release |
+| **Run workflow** with **deploy** ticked | The above, then deployment to production |
+
+### Exported artifacts
+
+Download these from the **Summary** page of any run, under **Actions**. GitHub keeps them for 90 days by default.
+
+| Artifact | Contents |
+|---|---|
+| `unit-test-results` | Test results in `.trx` format |
+| `e2e-results-hmac-off`, `e2e-results-hmac-on` | End-to-end output and container logs |
+| `api-build` | The published .NET API |
+| `frontend-build` | The built web app |
+| `docker-images` | Both images as files, loadable with `docker load` |
+| `deployment-bundle` | `docker-compose.prod.yml`, `deploy.sh` and `.env.example`; also attached to GitHub Releases for tagged versions |
+
+Images are also published to GitHub's container registry as `ghcr.io/abhishek4official/inventoryhold-api` and `-frontend`.
+
+### Setting up deployment
+
+You need a Linux server with Docker and the Compose plugin, which you can reach over SSH.
+
+**1. On the server,** create the folder and its secrets. Generate each secret with `openssl rand -hex 32`:
+
+```bash
+sudo mkdir -p /opt/inventory-hold && sudo chown "$USER" /opt/inventory-hold
+```
+
+```bash
+nano /opt/inventory-hold/.env
+```
+
+Put these in that file. `deploy/.env.example` lists the optional settings, such as ports:
+
+```
+RABBITMQ_PASSWORD=...
+HMAC_WEB_SECRET=...
+HMAC_CHECKOUT_SECRET=...
+```
+
+**2. Create an SSH key for deployment.** Add its public half to `~/.ssh/authorized_keys` on the server, for a user in the `docker` group.
+
+**3. In the GitHub repository,** go to **Settings > Environments** and create an environment named `production`. Adding yourself as a required reviewer makes every deployment wait for your approval. Then add these environment secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | The server's address |
+| `DEPLOY_USER` | The SSH user |
+| `DEPLOY_SSH_KEY` | The private half of the deployment key |
+| `DEPLOY_KNOWN_HOSTS` | The output of `ssh-keyscan your-server` |
+
+To use a folder other than `/opt/inventory-hold`, set a `DEPLOY_PATH` environment variable there too.
+
+### Deploying
+
+Go to **Actions > Pipeline > Run workflow**, pick the branch or tag, tick **deploy**, and run it. All the tests must pass before deployment starts.
+
+`deploy.sh` then pulls the new version and waits for every container to be healthy. **If the new version doesn't become healthy, it returns to the previous one and the run fails.** Stored data is kept either way. The web app is served on port 80 and the API on port 8080, and request signing is always on in this setup.
+
+### Going back to an earlier version
+
+On the server, using any tag listed under the repository's **Packages**:
+
+```bash
+bash /opt/inventory-hold/deploy.sh sha-abc1234
+```
+
+This needs access to the registry. If the images are private, first run `docker login ghcr.io` with a personal access token that has `read:packages`.
+
+### Deploying without GitHub Actions
+
+Download `deployment-bundle` and `docker-images`, and copy them to the server. Then extract the bundle, create `.env` as above, load the images, and deploy without pulling. The images keep their original version tag:
+
+```bash
+tar -xzf inventoryhold-deploy-sha-abc1234.tar.gz
+```
+
+```bash
+docker load -i inventoryhold-api.tar.gz && docker load -i inventoryhold-frontend.tar.gz
+```
+
+```bash
+SKIP_PULL=1 bash deploy.sh sha-abc1234
+```
+
+### Before relying on this in production
+
+This setup doesn't add TLS, so put a reverse proxy with HTTPS in front of it, and restrict the API's port to the systems that need it. The README's [Security](#security) section lists the other next steps. MongoDB's data lives in a Docker volume on one server, so it also needs backups.
 
 ## AI usage
 
